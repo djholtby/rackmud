@@ -63,7 +63,7 @@
     (define rsock (new telnet-socket% [native-socket nsock]))
     (hash-set! sockets nsock rsock)
     (send this hook-socket rsock)
-    #<void>)
+    (void))
 
   ;; (disconnect nsock) forwards the disconnect command to the racket socket and removes it from the hash table
 
