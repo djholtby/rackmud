@@ -6,7 +6,6 @@
 (define-struct lazy-ref (id) #:transparent #:mutable)
 
 (define classlist (make-hasheq))
-(define lib-path (let-values ([(here _ __) (split-path (current-contract-region))]) here))
 
 (define (oref o)
   (unless (is-a? o mud-object%)
@@ -30,7 +29,7 @@
   
                       ; (save) for a mud object produces a hash that maps field identifier symbols to values
                       (define/public (save)
-                        (make-hasheq (list (cons 'id id))))
+                        (make-hasheq `((id . ,id))))
   
                       ; (load flds) initializes each field with the values in the given hash map
                       (define/public (load flds)
@@ -45,38 +44,31 @@
                  (when (void? ob) (raise-argument-error 'call "lazy-ref to valid object" o))
                  ob)) method-id arg ...)]))
 
-;; (define-mud-class name super-expression (interface-expr ...) (field-id ...) body ...) defines a new mud class named name, descended from super-expression,
-;;   implementing the interfaces (interface-expr ...) and with
-;;   saved fields (field-id ...) and the consumed body expression and definitions
-;; define-mud-class: identifier mud-object% (identifier ...) defn-or-expr ...)
-;; requires: all saved fields must be serializable!
-;;           all fields listed as saved must actually be fields of the class!  (declaring them as saved does not declare them!)
-;; note: private fields *CAN* be saved
+
+;; (define-mud-class name super-expression mud-defn-or-expr ...) defines a mud-class descended from super-expression
+;; mud-defn-or-expr: as the regular class defn-or-expr, but with nosave varieties for all fields (e.g. "define" has the "define/nosave" variant)
 
 (define-syntax (define-mud-class* stx)
   (syntax-case stx ()
-    [(_ name super-expression (interface-expr ...) (field-id ...) body ...)
+    [(_ name super-expression (interface-expr ...)  body ...)
      (with-syntax ([orig-stx stx])
        #'(define-mud-class/priv orig-stx
            name
            super-expression
            (interface-expr ...)
-           (field-id ...)
            body ...))]))
 
-;; (define-mud-class name super-expression (field-id ...) body ...) is equivalent to (define-mud-class* name super-expression () (field-id ...) body ...)
+;; (define-mud-class name super-expression body ...) is equivalent to (define-mud-class* name super-expression () body ...)
 
 (define-syntax (define-mud-class stx)
   (syntax-case stx ()
-    [(_ name super-expression (field-id ...) body ...)
+    [(_ name super-expression body ...)
      (with-syntax ([orig-stx stx])
        #'(define-mud-class/priv orig-stx
            name
            super-expression
            ()
-           (field-id ...)
            body ...))]))
-
 
 (define-syntax (define-mud-struct stx)
   (syntax-case stx ()
@@ -85,67 +77,84 @@
          #:transparent
          props ...)]))
 
-
-#|(define-syntax (define-mud-class/priv stx)
-  (syntax-case stx ()
-    [(_ orig-stx name super-expression (interface-expr ...) (field-id ...) body ...)
-     (let* ([list-of-fields (eval #'(list #'field-id ...))]
-            [list-of-inface (cons #'externalizable<%> (eval #'(list #'interface-expr ...)))]
-            [field-values (map (lambda (s) (list 'cons (list 'quote (syntax->datum s)) (list 'deref-mobject s))) list-of-fields)]
-            [externalize-datum
-             (list (list 'define/override '(externalize)
-                         (append (list 'append '(super externalize))
-                                 (list (cons 'list field-values)))))]
-            [field-cond-block (map (lambda (s)
-                                     ;[(symbol=? (syntax->datum s) (unsafe-car fv)) (set! s (unsafe-cdr fv))]
-                                     (list 
-                                      (list 'quote (syntax->datum s))
-                                      (list 'set! s '(unsafe-cdr fv))))
-                                   list-of-fields)]
-            [internalize-field-datum
-             (list (list 'define/override '(internalize/field fv)
-                         (append (cons 'case (cons '(unsafe-car fv) field-cond-block))
-                                 '([else (super internalize/field fv)]))))]
-            [internalize-datum
-             '((define/override (internalize lst)
-                 (for-each (lambda (fv) (internalize/field fv)) lst)))]
-            [myheader (syntax->datum #'(define-serializable-class* name super-expression (externalizable<%>)))]
-            [mybody (syntax->datum #'(body ...))]
-            [class-def (append myheader
-                               mybody
-                               externalize-datum
-                               internalize-field-datum
-                               internalize-datum)]
-            )
-       (datum->syntax #'orig-stx class-def))]))
-|#
-
-
-
 (define-syntax (define-mud-class/priv stx)
   (syntax-case stx ()
-    [(_ orig-stx name super-expression (interface-expr ...) (field-id ...) body ...)
-     (let* ([list-of-fields (syntax->list #'(field-id ...))]
-            [field-save-list (map (λ (fid) (with-syntax ([fid fid])
-                                             #'(hash-set! result 'fid fid)))
-                                  list-of-fields)]
-            [field-load-list (map (λ (fid) (with-syntax ([fid fid])
-                                             #'(set! fid (hash-ref flds 'fid void))))
-                                  list-of-fields)])
-       (with-syntax ([(field-save ...) field-save-list]
-                     [(field-load ...) field-load-list])
+    [(_ orig-stx name super-expression (interface-expr ...) body ...)
+     (letrec ([saved-class-vars '()]
+              [def-or-exprs (syntax->list #'(body ...))]
+              ;; (wrap-def-or-expr doe) logs the (internal) id(s) if doe is a field definition (i.e. define, define-values, field, init-field) and leaves doe alone
+              ;;                        converts doe to a regular field definition if it is a nosave variant (i.e. define/nosave, define-values/nosave etc.) (does not log id in this case)
+              ;;                        recurses into subclauses if doe is a (begin ...) expression
+              ;;                        and otherwise leaves doe alone (i.e. if it is an expression or method definition)
+              [wrap-def-or-expr (λ (doe)
+                                  (syntax-case doe (define define/nosave define-values define-values/nosave field field/nosave init-field  init-field/nosave begin)
+                                    [(define  id expr) (begin (set! saved-class-vars (cons #'id saved-class-vars)) #'(define id expr))]
+                                    [(define/nosave  id expr) #'(define id expr)]
+                                    [(define-values (id ...) expr) (begin (for-each (λ (id) (with-syntax ([id id]) (set! saved-class-vars (cons #'id saved-class-vars))))
+                                                                                    (syntax->list #'(id ...)))
+                                                                          #'(define-values (id ...) expr))]
+                                    [(define-values/nosave (id ...) expr) #'(define-values (id ...) expr)]
+                                    [(field field-decl ...) (begin
+                                                              (for-each (λ (field-decl)
+                                                                          (syntax-case field-decl ()
+                                                                            [((internal-id external-id) default-value-expr)
+                                                                             (begin
+                                                                               (set! saved-class-vars (cons #'internal-id saved-class-vars))
+                                                                               #'((internal-id external-id) default-value-expr))]
+                                                                            [(id default-value-expr)
+                                                                             (begin
+                                                                               (set! saved-class-vars (cons #'id saved-class-vars))
+                                                                               #'(id default-value-expr))]
+                                                                            [(default ...) #'(default ...)]))
+                                                                        (syntax->list #'(field-decl ...)))
+                                                              #'(field field-decl ...))]
+                                    [(init-field field-decl ...) (begin
+                                                                   (for-each (λ (field-decl)
+                                                                               (syntax-case field-decl ()
+                                                                                 [((internal-id external-id) default-value-expr)
+                                                                                  (begin
+                                                                                    (set! saved-class-vars (cons #'internal-id saved-class-vars))
+                                                                                    #'((internal-id external-id) default-value-expr))]
+                                                                                 [(id default-value-expr)
+                                                                                  (begin
+                                                                                    (set! saved-class-vars (cons #'id saved-class-vars))
+                                                                                    #'(id default-value-expr))]
+                                                                                 [(default ...) #'(default ...)]))
+                                                                             (syntax->list #'(field-decl ...)))
+                                                                   #'(init-field field-decl ...))]
+                                         
+                                    [(field/nosave field-decl ...) #'(field field-decl ...)]
+                                    [(init-field/nosave init-decl ...) #'(init-field init-decl ...)]
+                                    [(begin clause ...)
+                                     (let ([wrapped-subclauses (map wrap-def-or-expr (syntax->list #'(clause ...)))])
+                                       (with-syntax ([(wrapped-clause ...) wrapped-subclauses])
+                                         #'(begin wrapped-clause ...)))]
+                                    [(default ...) #'(default ...)]))] ; it's none of the above, leave it alone
+              ;; wrapped-def-or-exprs is the remapped set of def-or-expr in the class
+              [wrapped-def-or-exprs (map wrap-def-or-expr
+                                         def-or-exprs)]
+              ;; List of syntaxes needed to save the saved-fields
+              [save-list (map (λ (id) (with-syntax ([id id])
+                                        #'(hash-set! result 'id id)))
+                              saved-class-vars)]
+              ;; List of syntaxes needed to load the saved-fields
+              [load-list (map (λ (id) (with-syntax ([id id])
+                                        #'(set! id (hash-ref vars 'id void))))
+                              saved-class-vars)])
+       (with-syntax ([(def-or-exp ... ) wrapped-def-or-exprs]
+                     [(var-save ...) save-list]
+                     [(var-load ...) load-list])
          #'(begin
              (define name (class* super-expression (interface-expr ...)
-                            body ...
                             (define/override (save)
                               (let ([result (super save)])
-                                field-save ...
+                                var-save ...
                                 result))
-
-                            (define/override (load flds)
-                              field-load ...
-                              (super load flds))))
-             (register-class 'name (find-relative-path lib-path (filepath)))
+                            (define/override (load vars)
+                              var-load ...
+                              (super load vars))
+                            def-or-exp ...))
+             (register-class 'name (relative-module-path (filepath)))
              (provide name)
              )))]))
 
@@ -153,13 +162,14 @@
 
 
 
-;(module+ test
+(module+ test
   (define-mud-struct posn (x y))
-  (define-mud-class foo mud-object% (a b c)
+
+  (define-mud-class foo% mud-object% 
     (super-new)
     (field [a (void)] [b (void)] [c (void)]))
-  (define x (new foo [id 'x]))
-  (define y (new foo))
+  (define x (new foo% [id 'x]))
+  (define y (new foo%))
 
   (set-field! a x (make-hash (list (cons 'x (oref x)))))
   (set-field! b x (list (list (vector (oref x)) 1) 'hello (posn 1 '((((4)))))))
@@ -171,4 +181,5 @@
   (get-field a y)
   (get-field b y)
   (get-field c y)
-  ;)
+  classlist
+  )
