@@ -1,76 +1,84 @@
 #lang racket
+(require racket/rerequire)
 (require racket/unsafe/ops)
 (require racket/serialize)
 (require racket/undefined)
 (require racket/class)
+(require racket/async-channel)
 (require json)
-(require "racket-mud.rkt")
+(require "objects.rkt")
+(require "telnet.rkt")
+(provide master-object% master-object start-up)
 
-(provide master-object% telnet-socket%)
-
-
-(define telnet-socket% (class object%
-  (super-new)
-  (init-field native-socket)
-;  (link-native-socket native-socket this)
-  (field [gmcp (make-hash)]
-         [on-gmcp void]
-         [on-text void])
-
-  (define/public (gmcp-send key value)
-    (unless (jsexpr? value) (raise-argument-error 'telnet-socket:gmcp-send "jsexpr?" value))
-    (native-gmcp-send native-socket key (jsexpr->bytes value)))
-
-  (define/public (gmcp-receive key value)
-    (hash-set! gmcp (bytes->symbol key) (bytes->jsexpr value))
-    (on-gmcp gmcp))
-
-  (define/public (send msg)
-    (unless (or (string? msg) (bytes? msg))
-      (raise-argument-error 'telnet-socket:send "(or string? bytes?)" value))
-    (native-send native-socket (if (string? msg) (string->bytes/utf-8 msg) msg)))
-
-  (define/public (rec msg)
-    (on-msg (bytes->string/utf-8 msg)))
-
-
-  ))
+(define master-object #f)
 
 
 
-(define-mud-class master-object% mud-object% () (users)
-  (super-init)
-  (define users (make-hasheq))
-  (define sockets (make-hasheq))
+; (startup mudlib master-file master-class db-type db-port db-sock db-srv db-db db-user db-pass) starts the mud racket side running
+;    using the specified settings for the mudlib and database connection.  Returns a reference to the master object
+; Effects: * Opens database connection
+;          * Loads or instantiates master object
+;              - this starts the master's event thread, too
+
+(define (start-up mudlib master-file master-class db-type db-port db-sock db-srv db-db db-user db-pass)
+  (database-setup db-type db-port db-sock db-srv db-db db-user db-pass)
+  (set-lib-path! mudlib)
+  (dynamic-rerequire master-file)
+  (define the-master% (dynamic-require master-file master-class))
+  (unless (subclass?/mud the-master% master-object%)
+    (raise-argument-error 'start-up "master-object%" master-class))
+  (get-singleton the-master%))
+
+#|
+The Master Object is responsible for saving any server-wide values that need saving.
+
+It also has the methods for establishing, maintaining, and disconnecting telnet connections (Telnet-User structs)
+
+Suggestion:  You'll almost definitely want a HashMap to map Telnet-Users to some kind of mud object
+|#
+
+(define master-object%
+  (class* mud-object% (tickable<%> listener<%>)
+    (super-new)
+    ;; (con-connect tel-conn) is called when a new user connects
+    ;; on-connect: Telnet-User -> Void
+    (define/public (on-connect tel-conn) (void))
+
+    ;; (on-disconnect tel-conn) is called when user tel-conn has disconneted 
+    ;; on-disconnect: Telnet-User -> Void
+    (define/public (on-disconnect tel-conn) (void))
 
 
-  (define/public (get-user name)
-    (define actual-name (if (string? name) (string->symbol name) name))
-    (hash-ref users actual-name))
-  
+    ;; (disconnect tel-conn) performs a server-side disconnect of tel-conn
+    ;;    will trigger an on-disconnect call once the socket has been closed
+    ;; disconnect: Telnet-User -> Void
+    (define/public (disconnect tel-conn)
+      (unless (telnet-user? tel-conn) (raise-argument-error 'master-object%:disconnect "telnet-user?" tel-conn))
+      (async-channel-put (telnet-user-out tel-conn)
+                         (telnet-msg 'QUIT #"")))
 
-
-  (define/public (hook-socket rsock)
-    )
+    (define/public (on-listener-message msg)
+      (when (telnet-user? msg) (on-connect msg)))
     
+    (define tick-length 3000) ; 3 second tick
+    (define tick-offset (random tick-length))
 
-  ;; (new-connect nsock) is called whenever the telnet server establishes a new connection
-  ;;  creates a new racket socket, associates the native and racket sockets in the sockets hash,
-  ;;  and calls hook-socket to hook the default menu to the new native socket
-  ;; new-connection: CPointer -> Void
+    
+    (define/public (set-tick t)
+      (set! tick-length t)
+      (set! tick-offset (random t)))
+    
+    (define/public (get-tick)
+      (values tick-length tick-offset))
+    
+    (define/public (on-tock)
+      (void))
 
-  (define/public (new-connection nsock)
-    (define rsock (new telnet-socket% [native-socket nsock]))
-    (hash-set! sockets nsock rsock)
-    (send this hook-socket rsock)
-    (void))
+    (define/public (on-message msg)
+      (eprintf "Master needs to handle messages ~a" msg))
+    
+    (define/override (on-load)
+      (set! master-object (oref this))
+      (super on-load))))
 
-  ;; (disconnect nsock) forwards the disconnect command to the racket socket and removes it from the hash table
 
-  (define/public (disconnect nsock)
-    (when (hash-has-key? sockets nsock)
-      (define rsock (hash-ref sockets nsock))
-      (send rsock disconnect)
-      (hash-remove! sockets nsock)))
-  
-)

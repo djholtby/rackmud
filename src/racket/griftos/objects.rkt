@@ -1,25 +1,92 @@
 #lang racket
 
-(provide mud-object% define-mud-class* define-mud-class define-mud-struct )
-(provide object-table lazy-ref lazy-ref? lazy-deref get-object database-save-object )
-;lazy-ref-id set-lazy-ref-id!
-(require "mudlib-util.rkt" (for-syntax "mudlib-util.rkt"))
+(provide mud-object% define-mud-class* define-mud-class define-mud-struct mud-class mud-class? mud-class-cid mud-class-class subclass?/mud)
+(provide object-table lazy-ref lazy-ref? lazy-ref/evt? lazy-ref/evt-evt get-object oref save-object get-singleton new/griftos send/griftos get-field/griftos set-field!/griftos)
+(provide database-setup)
 
+(provide tickable<%> tickable? listener<%> listener?)
+
+;(provide database-connected? set-database-connection!)
 (require racket/class)
 (require db srfi/19 db/util/datetime)
 (require racket/rerequire)
 (require racket/fasl)
-(require web-server/private/gzip)
 (require racket/hash)
+(require racket/undefined)
+
+(define (read-unreadable ignore port . args)
+  (define (read-unreadable/acc chars)
+    (define next-char (read-char port))
+    (cond [(char=? #\> next-char)
+           (case (string->symbol (list->string (reverse chars)))
+             [(void) (void)]
+             [(undefined) undefined]
+             [else (error 'read "unreadable value encountered : #<~a>" (string->symbol (list->string (reverse chars))))])]
+          [else (read-unreadable/acc (cons next-char chars))]))
+  (read-unreadable/acc empty))
+
+(define void-reader (make-readtable #f #\< 'dispatch-macro read-unreadable))
+
+(provide lib-path filepath relative-module-path set-lib-path!)
+
+(define lib-path #f)
+
+(define (set-lib-path! p)
+  (unless (path? p) (raise-argument-error 'set-lib-path! "path?" p))
+  (set! lib-path p))
+
+(define-syntax-rule (filepath)
+  (let ([src (variable-reference->resolved-module-path (#%variable-reference))])
+    src))
+
+;(make-relative-module-path lib-path resolved-module-path)
+
+(define (relative-module-path mod-path)
+  (let ([mpath (resolved-module-path-name mod-path)])
+    (cond [(path? mpath) (find-relative-path lib-path mpath)]
+          [(cons? mpath)  (cons (find-relative-path lib-path (car mpath)) (cdr mpath))])))
 
 
 
-(define-struct lazy-ref (id) #:transparent #:mutable)
+
+
+(define (database-setup db-type db-port db-sock db-srv db-db db-user db-pass)
+  (set-database-connection!
+   (case db-type
+     [('mysql) (mysql-connect
+              #:user db-user
+              #:database db-db
+              #:server (if db-srv db-srv "localhost")
+              #:port (if db-port db-port 3306)
+              #:socket db-sock
+              #:password db-pass)]
+     [('postgres) (postgresql-connect
+                 #:user db-user
+                 #:database db-db
+                 #:server (if db-srv db-srv "localhost")
+                 #:port (if db-port db-port 5432)
+                 #:socket db-sock
+                 #:password db-pass)]
+     [('sqlite) (sqlite3-connect
+               #:database db-db)]
+     [('odbc) (odbc-connect
+             #:user db-user
+             #:dsn db-db
+             #:password db-pass)]
+     [else (raise-argument-error 'database-setup "dbtype?" db-type)])))
+  
+
+
+(struct lazy-ref (id) #:transparent)
+
+(struct lazy-ref/evt lazy-ref (evt) #:transparent
+  #:property prop:evt (struct-field-index evt))
 
 (define (oref o)
   (unless (is-a? o mud-object%)
     (raise-argument-error 'oref "(is-a? o mud-object%)" o))
   (lazy-ref (get-field id o)))
+  
 
 #| This ended up being a very dumb idea
 
@@ -31,37 +98,74 @@
 (register-class 'mud-object% #f) ;; this is automatically loaded
 |#
 
+(struct mud-class (cid class))
+
+(define (subclass?/mud class super-class)
+  (unless (mud-class? class) (raise-argument-error 'subclass?/mud "mud-class?" class))
+  (unless (mud-class? super-class) (raise-argument-error 'subclass?/mud "mud-class?" super-class))
+  (subclass?
+   (mud-class-class class)
+   (mud-class-class super-class)))
+
+
+
+
 
 (define mud-object% (class object% 
                       (super-new)
                       (init-field [id (void)]
                                   [name "object"])
-                      (field      [live? #t]
-                                  [cid   #f]
-                                  ;; tags : (HashTable Symbol (Setof Symbol))
-                                  [tags  (make-hasheq)]
-                                  )
+                      (field      
+                       ;; tags : (HashTable Symbol (Setof Symbol))
+                       [last-accessed (current-date)]
+                       [saved (current-date)]
+                       [created (current-date)]
+                       [tags  (make-hasheq)]
+                       )
                       
                       ; (save) for a mud object produces a hash that maps field identifier symbols to values
                       (define/public (save)
-                        (make-hasheq `((name . ,name))))
+                        (make-hasheq))
 
                       (define/public (save-index)
                         (make-hasheq))
-  
-                      ; (load flds) initializes each field with the values in the given hash map
-                      (define/public (load flds)
-                        (set! name (hash-ref flds 'name void)))))
 
-(define-syntax (call stx)
+                      (abstract get-cid)
+
+                      (define/public (on-create) (void))
+                      (define/public (on-load) (void))
+                      
+                      ; (load flds) initializes each field with the values in the given hash map
+                      (define/public (load flds) (void))))
+
+
+(define-syntax (send/griftos stx)
   (syntax-case stx ()
     [(_ obj-expr method-id arg ...)
      #'(send (let [(o obj-expr)]
-               (unless (lazy-ref? o) (raise-argument-error 'call "lazy-ref?" o))
+               (unless (lazy-ref? o) (raise-argument-error 'send "lazy-ref?" o))
                (let [(ob (lazy-deref o))]
-                 (when (void? ob) (raise-argument-error 'call "lazy-ref to valid object" o))
+                 (when (void? ob) (raise-argument-error 'send "lazy-ref to valid object" o))
                  ob)) method-id arg ...)]))
 
+
+(define-syntax (get-field/griftos stx)
+  (syntax-case stx ()
+    [(_ field-id obj-expr)
+     #'(get-field field-id (let [(o obj-expr)]
+                             (unless (lazy-ref? o) (raise-argument-error 'get-field "lazy-ref?" o))
+                             (let [(ob (lazy-deref o))]
+                               (unless ob (raise-argument-error 'get-field "lazy-ref to valid object"))
+                               ob)))]))
+
+(define-syntax (set-field!/griftos stx)
+  (syntax-case stx ()
+    [(_ field-id obj-expr value-expr)
+     #'(set-field! field-id (let [(o obj-expr)]
+                              (unless (lazy-ref? o) (raise-argument-error 'set-field! "lazy-ref?" o))
+                              (let [(ob (lazy-deref o))]
+                                (unless ob (raise-argument-error 'set-field! "lazy-ref to valid object"))
+                                ob)) value-expr)]))
 
 ;; (define-mud-class name super-expression mud-defn-or-expr ...) defines a mud-class descended from super-expression
 ;; mud-defn-or-expr: as the regular class defn-or-expr, but with nosave varieties for all fields (e.g. "define" has the "define/nosave" variant)
@@ -202,13 +306,12 @@
                      [(var-save ...) save-list]
                      [(index-save ...) save-index-list]
                      [(var-load ...) load-list]
-                     [name/cid (datum->syntax #'name (string->symbol (string-append (symbol->string (syntax->datum #'name)) "/cid")))]
                      )
          #'(begin
-             (define name/cid (database-get-cid! 'name (relative-module-path (filepath))))
-               
-             (define name (class* super-expression (interface-expr ...)
-                            (set-field! cid this name/cid)
+             (define name
+               (mud-class (database-get-cid! 'name (relative-module-path (filepath)))
+                          (class* super-expression (interface-expr ...)
+                            (define/override (get-cid) name/cid)
                             (define/override (save)
                               (let ([result (super save)])
                                 var-save ...
@@ -220,11 +323,81 @@
                             (define/override (load vars)
                               var-load ...
                               (super load vars))
-                            def-or-exp ...))
+                            def-or-exp ...)))
              
 
-             (provide name name/cid)
-             )))]))
+             (provide name))))]))
+
+#|||||||||||||||||||||||||||||||||||||||||||||||
+
+                CLASS INTERFACES
+
+||||||||||||||||||||||||||||||||||||||||||||||||#
+
+
+
+;; guard-for-prop:tickable:  (Vector (X -> Real Real) (X -> Void))
+(define (guard-for-prop:tickable v si)
+  (unless (and (vector? v)
+               (= 2 (vector-length v))
+               (procedure? (vector-ref v 0))
+               (procedure-arity-includes? (vector-ref v 0) 1)
+               (procedure? (vector-ref v 1))
+               (procedure-arity-includes? (vector-ref v 1) 1))
+    (raise-argument-error 'guard-for-prop:tickable "(vector procedure? procedure?)" v))
+  v)
+(define-values (prop:tickable tickable? tickable-ref) (make-struct-type-property 'tickable guard-for-prop:tickable))
+
+(define (tickable->evt t)
+  (unless (tickable? t) (raise-argument-error 'tickable->evt "tickable?" t))
+  (define tick-value (tickable-ref t))
+  (define tick (vector-ref tick-value 0))
+  (define tock (vector-ref tick-value 1))
+  (wrap-evt (alarm-evt (tick t))
+            (λ (e) (tock t))))
+
+
+
+(define tickable<%> (interface* ()
+                                ([prop:tickable
+                                  (vector (λ (o)
+                                            (define-values (tick offset) (send o get-tick))
+                                            (+ (* tick (floor (/ (+ offset (current-inexact-milliseconds)) tick))) tick))
+                                          (λ (o) (send o on-tock)))])
+                                get-tick on-tock))
+
+
+  
+;; guard-for-prop:listener: (Vector (X -> AsyncChannel) (X String -> Any)
+(define (guard-for-prop:listener v si)
+  (unless (and (vector? v)
+               (= 2 (vector-length v))
+               (procedure? (vector-ref v 0))
+               (procedure-arity-includes? (vector-ref v 0) 1)
+               (procedure? (vector-ref v 1))
+               (procedure-arity-includes? (vector-ref v 1) 2))
+    (raise-argument-error 'guard-for-prop:listener "(vector procedure? procedure?)" v))
+  v)
+               
+(define-values (prop:listener listener? listener-ref) (make-struct-type-property 'listener guard-for-prop:listener))
+
+(define (listener->evt l)
+  (unless (listener? l) (raise-argument-error 'listener->evt "listener?" l))
+  (define chan ((vector-ref (listener-ref l) 0) l))
+  (define on-msg (vector-ref (listener-ref l) 1))
+  (wrap-evt chan (λ (msg) (on-msg l msg))))
+
+(define listener<%> (interface* ()
+                                ([prop:listener
+                                  (vector (λ (o) (send o get-listener-channel))
+                                          (λ (o msg) (send o on-message msg)))])
+                                get-listener-channel on-message))
+
+
+
+
+
+
 
 
 #|||||||||||||||||||||||||||||||||||||||||||||||
@@ -234,29 +407,32 @@
 ||||||||||||||||||||||||||||||||||||||||||||||||#
 
 
-(define object-table (make-hasheq empty))
+(define object-table (make-hasheqv empty))
 
 ;; (get-object id) produces the object with the ID id, or #<void> if none is currently loaded
 ;; get-object: Lazy-Ref -> (U (Instance Mud-Object%) Void)
 
 (define (get-object id)
-  (hash-ref object-table (lazy-ref-id id) void))
+  (hash-ref object-table id void))
 
 ;; (lazy-deref) produces the object pointed to by lazy-ref (from the object table if possible, the database otherwise)
-;;  produces #fif the object cannot be found in the otable or the database (i.e. the object has been deleted)
-
+;;  produces #f if the object cannot be found in the otable or the database (i.e. the object has been deleted)
+;;  If the object was found, updates its last-access field to the current time
 ;; lazy-deref: Lazy-Ref -> (U (Instance Mud-Object%) #f)
 
 (define (lazy-deref lr)
-  (unless (lazy-ref? lr) (raise-argument-error 'lazy-deref "lazy-ref?" lr))
-  (define id (lazy-ref-id lr))
-  (define o  (get-object id))
-  (if (void? o) (database-load id) o))
+  (define result (lazy-deref/no-keepalive lr))
+  (when result (set-field! last-access result (current-date)))
+  result)
 
-(define _db_save       void)
-(define _db_load       void)
-(define _db_conn       void)
-(define _db_close      void)
+;; (lazy-deref/no-keepalive lr) is the same as lazy-deref except the object's last-access field is not updated
+;;    Use this to query an object without making it seem "still in use"
+(define (lazy-deref/no-keepalive lr)
+    (unless (lazy-ref? lr) (raise-argument-error 'lazy-deref "lazy-ref?" lr))
+    (define id (lazy-ref-id lr))
+    (define o  (get-object id))
+    (if (void? o) (database-load id) o))
+
 (define _dbc_ #f)
 
 (define class-load-stmt #f)
@@ -285,66 +461,66 @@
   (local ([define is-postgres? (symbol=? 'postgresql (dbsystem-name (connection-dbsystem conn)))])
     (when _dbc_ (disconnect _dbc_))
     (set! _dbc_ conn)
-    (set! object-load-stmt (prepare conn (format "SELECT class, created, saved, name, deleted, fields FROM objects WHERE oid = ~v"
+    (set! object-load-stmt (prepare conn (format "SELECT cid, created, saved, name, deleted, fields FROM objects WHERE oid = ~a"
                                                  (if is-postgres? "$1" "?"))))
-    (set! class-load-stmt (prepare conn (format "SELECT classname, module FROM classes WHERE cid = ~v"
+    (set! class-load-stmt (prepare conn (format "SELECT classname, module FROM classes WHERE cid = ~a"
                                                 (if is-postgres? "$1" "?"))))
-    (set! get-classid-stmt (prepare conn (format "SELECT cid FROM classes WHERE classname = ~v AND module = ~v"
+    (set! get-classid-stmt (prepare conn (format "SELECT cid FROM classes WHERE classname = ~a AND module = ~a"
                                                  (if is-postgres? "$1" "?")
                                                  (if is-postgres? "$2" "?"))))
 
-    (set! create-classid-stmt (prepare conn (format "INSERT INTO classes (classname,module) VALUES (~v , ~v)"
+    (set! create-classid-stmt (prepare conn (format "INSERT INTO classes (classname,module) VALUES (~a , ~a)"
                                                     (if is-postgres? "$1" "?")
                                                     (if is-postgres? "$2" "?"))))
     
-    (set! delete-fields-stmt (prepare conn (format "DELETE FROM indexed_fields WHERE object = ~v"
+    (set! delete-fields-stmt (prepare conn (format "DELETE FROM indexed_fields WHERE oid = ~a"
                                                    (if is-postgres? "$1" "?"))))
-    (set! delete-tags-stmt (prepare conn (format "DELETE FROM tags WHERE object = ~v"
+    (set! delete-tags-stmt (prepare conn (format "DELETE FROM tags WHERE oid = ~a"
                                                  (if is-postgres? "$1" "?"))))
 
-    (set! new-object-stmt (prepare conn (format "INSERT INTO objects (class, created, name, deleted) VALUES (~v, ~v, ~v, false) ~v"
+    (set! new-object-stmt (prepare conn (format "INSERT INTO objects (cid, created, name, deleted) VALUES (~a, ~a, ~a, false) ~a"
                                                 (if is-postgres? "$1" "?")
                                                 (if is-postgres? "$2" "?")
                                                 (if is-postgres? "$3" "?")
                                                 (if is-postgres? "RETURNING oid" ""))))
 
-    (set! save-object-stmt (prepare conn (format "UPDATE objects SET name=~v, saved=~v, fields=~v WHERE oid = ~v"
+    (set! save-object-stmt (prepare conn (format "UPDATE objects SET name=~a, saved=~a, fields=~a WHERE oid = ~a"
                                                  (if is-postgres? "$1" "?")
                                                  (if is-postgres? "$2" "?")
                                                  (if is-postgres? "$3" "?")
                                                  (if is-postgres? "$4" "?"))))
 
-    (set! save-tag-stmt (prepare conn (format "INSERT INTO tags (object, category, tag) values (~v, ~v, ~v)"
+    (set! save-tag-stmt (prepare conn (format "INSERT INTO tags (oid, category, tag) values (~a, ~a, ~a)"
                                               (if is-postgres? "$1" "?")
                                               (if is-postgres? "$2" "?")
                                               (if is-postgres? "$3" "?"))))
 
-    (set! save-field-stmt (prepare conn (format "INSERT INTO indexed_fields (object, field, value) values (~v, ~v, ~v)"
+    (set! save-field-stmt (prepare conn (format "INSERT INTO indexed_fields (oid, field, value) values (~a, ~a, ~a)"
                                                 (if is-postgres? "$1" "?")
                                                 (if is-postgres? "$2" "?")
                                                 (if is-postgres? "$3" "?"))))
 
-    (set! load-tags-stmt (prepare conn (format "SELECT category, tag FROM tags WHERE object = ~v"
+    (set! load-tags-stmt (prepare conn (format "SELECT category, tag FROM tags WHERE oid = ~a"
                                                (if is-postgres? "$1" "?"))))
 
-    (set! load-fields-stmt (prepare conn (format ("SELECT field, value FROM indexed_fields WHERE object = ~v"
-                                                  (if is-postgres? "$1" "?")))))
+    (set! load-fields-stmt (prepare conn (format "SELECT field, value FROM indexed_fields WHERE oid = ~a"
+                                                 (if is-postgres? "$1" "?"))))
 
-    (set! search-tags-stmt (prepare conn (format ("SELECT object FROM tags WHERE category = ~v AND tag = ~v"
+    (set! search-tags-stmt (prepare conn (format "SELECT oid FROM tags WHERE category = ~a AND tag = ~a"
+                                                 (if is-postgres? "$1" "?")
+                                                 (if is-postgres? "$2" "?"))))
+
+    (set! search-index-stmt (prepare conn (format "SELECT oid FROM indexed_fields WHERE field = ~a AND value = ~a"
                                                   (if is-postgres? "$1" "?")
-                                                  (if is-postgres? "$2" "?")))))
-
-    (set! search-index-stmt (prepare conn (format ("SELECT object FROM indexed_fields WHERE field = ~v AND value = ~v"
-                                                   (if is-postgres? "$1" "?")
-                                                   (if is-postgres? "$2" "?")))))
+                                                  (if is-postgres? "$2" "?"))))
 
                                               
-    (set! get-singleton-stmt (prepare conn (format ("SELECT oid FROM singletons WHERE cid = ~v"
-                                                    (if is-postgres? "$1" "?")))))
+    (set! get-singleton-stmt (prepare conn (format "SELECT oid FROM singletons WHERE cid = ~a"
+                                                   (if is-postgres? "$1" "?"))))
 
-    (set! new-singleton-stmt (prepare conn (format ("INSERT INTO singletons (oid, cid) values (~v, ~v)"
-                                                    (if is-postgres? "$1" "?")
-                                                    (if is-postgres? "$2" "?")))))
+    (set! new-singleton-stmt (prepare conn (format "INSERT INTO singletons (oid, cid) values (~a, ~a)"
+                                                   (if is-postgres? "$1" "?")
+                                                   (if is-postgres? "$2" "?"))))
                                                 
                                       
 
@@ -383,7 +559,7 @@ database-get-cid! : Symbol Path -> Nat
   (unless cid
     (define class-string (symbol->string class-name))
     (define module-string (path->string module-name))
-    (define cid (query-maybe-value _dbc_ get-classid-stmt class-string module-string))
+    (set! cid (query-maybe-value _dbc_ get-classid-stmt class-string module-string))
     (hash-set! cid-map (cons class-name module-name) cid)
     (unless cid
       (query-exec _dbc_ create-classid-stmt class-string module-string)
@@ -396,87 +572,110 @@ database-get-cid! : Symbol Path -> Nat
 
 (define (database-get-object id)
   (unless (database-connected?) (error "database not connected"))
+  ;"SELECT cid, created, saved, name, deleted, fields FROM objects WHERE oid = ~a"
   (define obj (query-maybe-row _dbc_ object-load-stmt id))
   (define tags (query-rows _dbc_ load-tags-stmt id))
-  (define indexed-fields (map (λ (v)
-                                (cons (string->symbol (vector-ref v 0))
-                                      (read (open-input-string (bytes->string/utf-8 (vector-ref v 1))))))
-                              (query-rows _dbc_ load-fields-stmt id)))
-    
-  (if obj (local [(define classinfo/v (query-row _dbc_ class-load-stmt (vector-ref obj 0)))
-                  
-                  (define fields (read (open-input-string (bytes->string/utf-8 (gunzip/bytes (vector-ref obj 2))))))
-                  (define classname (string->symbol (vector-ref classinfo/v 0)))
-                  (define classfile (string->path (vector-ref classinfo/v 1)))
-                  (define changes (dynamic-rerequire classfile)) ;; TODO: Mark changed mudlib source files so old instances can be refreshed
-                  (define class (dynamic-require classfile classname))
-                  (define new-object (new class [id id]))
-                  (define new-object/tags (get-field tags new-object))
-                  ]
+  ;(eprintf "~s" obj)
+  (define indexed-fields (make-hasheq (map (λ (v)
+                                             (cons (string->symbol (vector-ref v 0))
+                                                   (parameterize ([current-readtable void-reader]) (read (open-input-string (bytes->string/utf-8 (vector-ref v 1)))))))
+                                           (query-rows _dbc_ load-fields-stmt id))))
+  
+  (if (and obj (not (vector-ref obj 4))) (local [(define classinfo/v (query-row _dbc_ class-load-stmt (vector-ref obj 0)))
+                                                 (define fields (parameterize ([current-readtable void-reader]) (read (open-input-string (bytes->string/utf-8 (vector-ref obj 5))))))
+                                                 (define classname (string->symbol (vector-ref classinfo/v 0)))
+                                                 (define classfile (string->path (vector-ref classinfo/v 1)))
+                                                 (define changes (dynamic-rerequire classfile)) ;; TODO: Mark changed mudlib source files so old instances can be refreshed
+                                                 (define class (dynamic-require classfile classname))
+                                                 (define new-object (new class [id id]))
+                                                 (define new-object/tags (get-field tags new-object))
+                                                 (define created (sql-datetime->srfi-date (vector-ref obj 1)))
+                                                 (define saved (sql-datetime->srfi-date (vector-ref obj 2)))
+                                                 ]
 
-            (when (cons? changes) (void))
-            (hash-union! fields indexed-fields)
-            (send new-object load fields)
-            (for ([row (in-list tags)])
-              (local [(define category (vector-ref row 0))
-                      (define tag      (string->symbol (vector-ref row 1)))]
-                (if (hash-has-key? new-object/tags category)
-                    (set-add! (hash-ref new-object/tags category) tag)
-                    (hash-set! new-object/tags category (mutable-seteq tag)))))
+                                           ;;; TODO:  This should recompile the changed files, get the timestamps from the changed files, and updated all of their cid's with the timestamp
+                                           ;;; TODO (future): Somewhere in the system is a thread that looks for instances where saved < cid.saved, and does a save -> reload to them
+                                           ;(when (cons? changes) (eprintf "~v\n" changes))
+                                           
+                                           ;(define all-fields (hash-union fields indexed-fields))
+                                           ;(eprintf "fields=~v\n" indexed-fields)
+                                           (hash-union! indexed-fields fields)
+                                           (send new-object load indexed-fields)
+                                           (set-field! created new-object created)
+                                           (set-field! saved new-object saved)
+                                           (for ([row (in-list tags)])
+                                             (local [(define category (vector-ref row 0))
+                                                     (define tag      (string->symbol (vector-ref row 1)))]
+                                               (if (hash-has-key? new-object/tags category)
+                                                   (set-add! (hash-ref new-object/tags category) tag)
+                                                   (hash-set! new-object/tags category (mutable-seteq tag)))))
                 
-            (send new-object on-load)
-            new-object)
+                                           (send new-object on-load)
+                                           (hash-set! object-table id new-object)
+                                           new-object)
       (void)))
   
 ;(deserialize (read (open-input-string (bytes->string/utf-8 (_db_load id))))))
 ;(void))
 
+(define (save-object oref)
+  (unless (lazy-ref? oref) (raise-argument-error 'save-object "lazy-ref?" oref))
+  (define o (get-object (lazy-ref-id oref)))
+  (when o (database-save-object o )))
+
 (define (database-save-object o)
   (unless (database-connected?) (error "database not connected"))
   (define oid (get-field id o))
   (define name (get-field name o))
-  (define fields (send o save))
+  (define fields (string->bytes/utf-8 (format "~s" (send o save))))
+  ;(eprintf "fields=~a\n" fields)
   (define indexed-fields (send o save-index))
   (define saved (srfi-date->sql-timestamp (current-date)))
 
-  (set-field! last-save o saved)
+  (set-field! saved o saved)
   
   (start-transaction _dbc_)
   (query-exec _dbc_ delete-fields-stmt oid)
   (query-exec _dbc_ delete-tags-stmt oid)
   (query-exec _dbc_ save-object-stmt name saved fields oid)
   (for ([(field value) (in-hash indexed-fields)])
-    (query-exec _dbc_ save-field-stmt oid field value))
+    (query-exec _dbc_ save-field-stmt oid (symbol->string field) (string->bytes/utf-8 (format "~s" value))))
   (for* ([(category tags)
-         (in-hash (get-field tags o))]
-        [tag (in-set tags)])
+          (in-hash (get-field tags o))]
+         [tag (in-set tags)])
     (query-exec _dbc_ save-tag-stmt oid category tag))
   (commit-transaction _dbc_))
 
-#|
-(define (get-singleton cid)
-  (define oid (query-maybe-value _dbc_ get-singleton-stmt cid))
-  (if oid
-      (lazy-ref oid) ; already exists
-      (local [(define o (new .......!
-        
-        
-        )))
-  |#    
+
+(define-syntax (get-singleton stx)
+  (syntax-case stx()
+    [(_ cls (_id arg) ...)
+     #'(begin
+         (unless (mud-class? cls) (raise-argument-error 'get-singleton "mud-class?" cls))
+         (define cid (mud-class-cid cls))
+         (define oid (query-maybe-value _dbc_ get-singleton-stmt cid))
+         (if oid
+             (lazy-ref oid) ; already exists
+             (local [(define o (new/griftos cls (_id arg) ...))]
+               (query-exec _dbc_ new-singleton-stmt (get-field id o) cid)
+               o
+        )))]))
+
 
 
 (define-syntax (new/griftos stx)
   (syntax-case stx ()
     [(_ cls (id arg) ...)
-     #'(local [(define o (new class (id arg) ...))]
+     #'(local [(define c (mud-class-class cls))
+               (define o (new c (id arg) ...))]
          (database-new-object o))]))
 
 (define (database-new-object o)
-  (define cid (get-field cid o))
+  (define cid (send o get-cid))
   (define name (get-field name o))
   (define created (get-field created o))
   ;"INSERT INTO objects (class, created, name, deleted) VALUES (~v, ~v, ~v, false)
-  (define new-obj-result (query _dbc_ new-object-stmt cid created name))
+  (define new-obj-result (query _dbc_ new-object-stmt cid (srfi-date->sql-timestamp created) name))
 
   (cond [(and (simple-result? new-obj-result) (assoc 'insert-id (simple-result-info new-obj-result)))
          (set-field! id o (assoc 'insert-id (simple-result-info new-obj-result)))]
@@ -489,10 +688,46 @@ database-get-cid! : Symbol Path -> Nat
   (send o on-load)
   (database-save-object o)
   (hash-set! object-table (get-field id o) o)
-  (lazy-ref o))
+  (oref o))
                 
-         
-(define-mud-class foo mud-object% (super-new)
-  (init-field/index [player-name "Unnamed"])
-  (field [my-field (void)])
-  )
+
+#||||||||||||||||||||||||||||||||||||||||||||
+
+  Threading stuff
+
+||||||||||||||||||||||||||||||||||||||||||||#
+
+(define sync-threads (hasheqv))
+
+(define (make-event-thunk obj)
+  (define events (filter identity (list (if (evt? obj) obj #f)
+                                        (if (tickable? obj) (tickable->evt obj) #f)
+                                        (if (listener? obj) (listener->evt obj) #f))))
+
+  (define evt (match events
+                [(list e) e]
+                [(list e ...) (apply choice-evt events)]))
+  ;; the thunk for an object's thread will continue until either the thread is broken, or the sync event produces EOF
+  (define (loop)
+    (with-handlers ([exn:break #t])
+      (unless (eof-object? (sync evt)) (loop))))
+  loop)
+
+
+(define (add-event o)
+  (unless (lazy-ref? o) (raise-argument-error 'add-event "lazy-ref?" o))
+  (define id (lazy-ref-id o))
+  (define obj (lazy-deref o))
+  (unless (or (evt? obj)
+              (listener? obj)
+              (tickable? obj))
+    (raise-argument-error 'add-event "evt?" obj))
+  (hash-set! sync-threads id (thread (make-event-thunk obj))))
+
+(define (remove-event o)
+  (unless (lazy-ref? o) (raise-argument-error 'remove-event "lazy-ref?" o))
+  (define id (lazy-ref-id o))
+  (when (hash-has-key? sync-threads id)
+    (define thread (hash-ref sync-threads id))
+    (break-thread thread)
+    (hash-remove! sync-threads id)))
