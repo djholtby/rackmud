@@ -1,33 +1,92 @@
 #lang racket
-(require racket/rerequire)
-(require racket/unsafe/ops)
-(require racket/serialize)
-(require racket/undefined)
 (require racket/class)
-(require racket/async-channel)
 (require json)
 (require "objects.rkt")
 (require "telnet.rkt")
-(provide master-object% master-object start-up)
+(require racket/rerequire)
+(provide master-object master<%> server-settings start-up)
+(provide make-jit set-make-jit!)
+
+
+;(provide ssl-settings ssl-settings? ssl-settings-private-key ssl-settings-certificate ssl-settings-port)
+(provide db-settings  db-settings? db-settings-type db-settings-user db-settings-password db-settings-db
+         db-settings-server db-settings-port db-settings-socket)
+(provide griftos-config griftos-config? griftos-config-mudlib griftos-config-master-file griftos-config-master-class
+         griftos-config-encodings griftos-config-database)
 
 (define master-object #f)
+(define server-settings #f)
 
 
+#|||||||||||||||||||||||||||||||
+Native Functions
 
-; (startup mudlib master-file master-class db-type db-port db-sock db-srv db-db db-user db-pass) starts the mud racket side running
-;    using the specified settings for the mudlib and database connection.  Returns a reference to the master object
+These are hooks that the C backend will override with C functions
+
+|||||||||||||||||||||||||||||||#
+
+;; (make-jit proc) requests that proc be compiled  to native code
+;; make-jit : Procedure -> Void
+(define make-jit void)
+
+(define (set-make-jit! proc)
+  (unless (procedure? proc)
+    (raise-argument-error 'set-make-jit! "procedure?" proc))
+  (set! make-jit proc))
+
+
+#|||||||||||||||||||||
+Master Interface
+
+The C backend will instantiate a singleton of this class.
+The connection manager will send a telnet-object to it whenever a user connects.
+|||||||||||||||||||||#
+
+
+(define master<%>
+  (interface ()
+    [on-connect (->m exact-positive-integer? telnet?/c)]))
+
+; DB-Settings is a (db-settings (anyof 'postgres 'sqlite 'odbc 'mysql) - type
+;                               String                                 - user
+;                               String                                 - password
+;                               String                                 - db (for ODBC this is the DSN)
+;                               (anyof String False)                   - server (false = localhost or use socket or N/A)
+;                               (anyof Port False)                     - port (false = default or use socket or N/A)
+;                               (anyof Path False))                    - socket (false = none or N/A)
+(struct db-settings (type user password db server port socket))
+
+(struct griftos-config (mudlib master-file master-class encodings database))
+
+
+; (startup cfg) starts the mud racket side running using the provided config struct cfg
 ; Effects: * Opens database connection
 ;          * Loads or instantiates master object
 ;              - this starts the master's event thread, too
 
-(define (start-up mudlib master-file master-class db-type db-port db-sock db-srv db-db db-user db-pass)
-  (database-setup db-type db-port db-sock db-srv db-db db-user db-pass)
-  (set-lib-path! mudlib)
-  (dynamic-rerequire master-file)
-  (define the-master% (dynamic-require master-file master-class))
-  (unless (subclass?/mud the-master% master-object%)
-    (raise-argument-error 'start-up "master-object%" master-class))
-  (get-singleton the-master%))
+; start-up: Griftos-CFG
+
+
+(define (start-up cfg)
+  (let ([mudlib (griftos-config-mudlib cfg)]
+        [master-file (griftos-config-master-file cfg)]
+        [master-class (griftos-config-master-class cfg)]
+        [db-type (db-settings-type (griftos-config-database cfg))]
+        [db-port (db-settings-port (griftos-config-database cfg))]
+        [db-sock (db-settings-socket (griftos-config-database cfg))]
+        [db-srv  (db-settings-server (griftos-config-database cfg))]
+        [db-db   (db-settings-db (griftos-config-database cfg))]
+        [db-user (db-settings-user (griftos-config-database cfg))]
+        [db-pass (db-settings-password (griftos-config-database cfg))])
+    (set! server-settings cfg)
+    (database-setup db-type db-port db-sock db-srv db-db db-user db-pass)
+    (set-lib-path! mudlib)
+    (dynamic-rerequire master-file)
+    (define the-master% (dynamic-require master-file master-class))
+    (unless (implementation?/mud the-master% master<%>)
+      (raise-argument-error 'start-up "master-object%" master-class))
+    (set! master-object  (get-singleton the-master%))
+    master-object))
 
 #|
 The Master Object is responsible for saving any server-wide values that need saving.
@@ -36,49 +95,5 @@ It also has the methods for establishing, maintaining, and disconnecting telnet 
 
 Suggestion:  You'll almost definitely want a HashMap to map Telnet-Users to some kind of mud object
 |#
-
-(define master-object%
-  (class* mud-object% (tickable<%> listener<%>)
-    (super-new)
-    ;; (con-connect tel-conn) is called when a new user connects
-    ;; on-connect: Telnet-User -> Void
-    (define/public (on-connect tel-conn) (void))
-
-    ;; (on-disconnect tel-conn) is called when user tel-conn has disconneted 
-    ;; on-disconnect: Telnet-User -> Void
-    (define/public (on-disconnect tel-conn) (void))
-
-
-    ;; (disconnect tel-conn) performs a server-side disconnect of tel-conn
-    ;;    will trigger an on-disconnect call once the socket has been closed
-    ;; disconnect: Telnet-User -> Void
-    (define/public (disconnect tel-conn)
-      (unless (telnet-user? tel-conn) (raise-argument-error 'master-object%:disconnect "telnet-user?" tel-conn))
-      (async-channel-put (telnet-user-out tel-conn)
-                         (telnet-msg 'QUIT #"")))
-
-    (define/public (on-listener-message msg)
-      (when (telnet-user? msg) (on-connect msg)))
-    
-    (define tick-length 3000) ; 3 second tick
-    (define tick-offset (random tick-length))
-
-    
-    (define/public (set-tick t)
-      (set! tick-length t)
-      (set! tick-offset (random t)))
-    
-    (define/public (get-tick)
-      (values tick-length tick-offset))
-    
-    (define/public (on-tock)
-      (void))
-
-    (define/public (on-message msg)
-      (eprintf "Master needs to handle messages ~a" msg))
-    
-    (define/override (on-load)
-      (set! master-object (oref this))
-      (super on-load))))
 
 

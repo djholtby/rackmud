@@ -1,6 +1,6 @@
 #lang racket
 
-(provide mud-object% define-mud-class* define-mud-class define-mud-struct mud-class mud-class? mud-class-cid mud-class-class subclass?/mud)
+(provide mud-object% define-mud-class* define-mud-class define-mud-struct mud-class mud-class? mud-class-cid mud-class-class subclass?/mud subclass?/mud/c implementation?/mud implementation?/mud/c is-a?/mud/c)
 (provide object-table lazy-ref lazy-ref? lazy-ref/evt? lazy-ref/evt-evt get-object oref save-object get-singleton new/griftos send/griftos get-field/griftos set-field!/griftos)
 (provide database-setup)
 
@@ -32,12 +32,11 @@
 (define lib-path #f)
 
 (define (set-lib-path! p)
-  (unless (path? p) (raise-argument-error 'set-lib-path! "path?" p))
+  (unless (path-string? p) (raise-argument-error 'set-lib-path! "path-string?" p))
   (set! lib-path p))
 
 (define-syntax-rule (filepath)
-  (let ([src (variable-reference->resolved-module-path (#%variable-reference))])
-    src))
+  (variable-reference->resolved-module-path (#%variable-reference)))
 
 ;(make-relative-module-path lib-path resolved-module-path)
 
@@ -54,25 +53,25 @@
   (set-database-connection!
    (case db-type
      [('mysql) (mysql-connect
-              #:user db-user
-              #:database db-db
-              #:server (if db-srv db-srv "localhost")
-              #:port (if db-port db-port 3306)
-              #:socket db-sock
-              #:password db-pass)]
+                #:user db-user
+                #:database db-db
+                #:server (if db-srv db-srv "localhost")
+                #:port (if db-port db-port 3306)
+                #:socket db-sock
+                #:password db-pass)]
      [('postgres) (postgresql-connect
-                 #:user db-user
-                 #:database db-db
-                 #:server (if db-srv db-srv "localhost")
-                 #:port (if db-port db-port 5432)
-                 #:socket db-sock
-                 #:password db-pass)]
+                   #:user db-user
+                   #:database db-db
+                   #:server (if db-srv db-srv "localhost")
+                   #:port (if db-port db-port 5432)
+                   #:socket db-sock
+                   #:password db-pass)]
      [('sqlite) (sqlite3-connect
-               #:database db-db)]
+                 #:database db-db)]
      [('odbc) (odbc-connect
-             #:user db-user
-             #:dsn db-db
-             #:password db-pass)]
+               #:user db-user
+               #:dsn db-db
+               #:password db-pass)]
      [else (raise-argument-error 'database-setup "dbtype?" db-type)])))
   
 
@@ -101,15 +100,44 @@
 (struct mud-class (cid class))
 
 (define (subclass?/mud class super-class)
-  (unless (mud-class? class) (raise-argument-error 'subclass?/mud "mud-class?" class))
   (unless (mud-class? super-class) (raise-argument-error 'subclass?/mud "mud-class?" super-class))
-  (subclass?
-   (mud-class-class class)
-   (mud-class-class super-class)))
+  (and
+   (mud-class? class)
+   (subclass?
+    (mud-class-class class)
+    (mud-class-class super-class))))
 
 
+(define (subclass?/mud/c super-class)
+  (unless (mud-class? super-class) (raise-argument-error 'subclass?/mud/c "mud-class?" super-class))
+  (define superc (mud-class-class super-class))
+  (lambda (v)
+    (and (mud-class? v)
+         (subclass? (mud-class-class v)) superc)))
+  
+(define (implementation?/mud v intf)
+  (unless (interface? intf) (raise-argument-error 'implementation?/mud "interface?" intf))
+  (and (mud-class? v)
+       (implementation? (mud-class-class v) intf)))
 
+(define (implementation?/mud/c intf)
+  (unless (interface? intf) (raise-argument-error 'implementation?/mud/c "interface?" intf))
+  (lambda (v)
+    (and (mud-class? v)
+         (implementation? (mud-class-class v) intf))))
 
+(define (is-a?/mud v type)
+  (unless (or (interface? type) (mud-class? type)) (raise-argument-error 'is-a?/mud "(or/c interface? mud-class?)" type))
+  (cond [(not (lazy-ref? v)) #f]
+        [(interface? type) (is-a? (lazy-deref v) type)]
+        [else (is-a? (lazy-deref v) (mud-class-class type))]))
+
+(define (is-a?/mud/c type)
+  (unless (or (interface? type) (mud-class? type)) (raise-argument-error 'is-a?/mud "(or/c interface? mud-class?)" type))
+  (lambda (v)
+    (cond [(not (lazy-ref? v)) #f]
+          [(interface? type) (is-a? (lazy-deref v) type)]
+          [else (is-a? (lazy-deref v) (mud-class-class type))])))
 
 (define mud-object% (class object% 
                       (super-new)
@@ -120,8 +148,10 @@
                        [last-accessed (current-date)]
                        [saved (current-date)]
                        [created (current-date)]
-                       [tags  (make-hasheq)]
-                       )
+                       [tags  (make-hasheq)])
+
+                      
+                      (field [loaded #f]) ; when it was loaded from the database
                       
                       ; (save) for a mud object produces a hash that maps field identifier symbols to values
                       (define/public (save)
@@ -132,8 +162,8 @@
 
                       (abstract get-cid)
 
-                      (define/public (on-create) (void))
-                      (define/public (on-load) (void))
+                      (define/public (on-create) (set-field! loaded this (current-date)))
+                      (define/public (on-load) (set-field! loaded this (current-date)))
                       
                       ; (load flds) initializes each field with the values in the given hash map
                       (define/public (load flds) (void))))
@@ -306,10 +336,12 @@
                      [(var-save ...) save-list]
                      [(index-save ...) save-index-list]
                      [(var-load ...) load-list]
+                     [name/cid (datum->syntax #'orig-stx (string->symbol (string-append (symbol->string (syntax->datum #'name)) "/cid")))]
                      )
          #'(begin
+             (define name/cid (database-get-cid! 'name (relative-module-path (filepath))))
              (define name
-               (mud-class (database-get-cid! 'name (relative-module-path (filepath)))
+               (mud-class name/cid
                           (class* super-expression (interface-expr ...)
                             (define/override (get-cid) name/cid)
                             (define/override (save)
@@ -428,10 +460,10 @@
 ;; (lazy-deref/no-keepalive lr) is the same as lazy-deref except the object's last-access field is not updated
 ;;    Use this to query an object without making it seem "still in use"
 (define (lazy-deref/no-keepalive lr)
-    (unless (lazy-ref? lr) (raise-argument-error 'lazy-deref "lazy-ref?" lr))
-    (define id (lazy-ref-id lr))
-    (define o  (get-object id))
-    (if (void? o) (database-load id) o))
+  (unless (lazy-ref? lr) (raise-argument-error 'lazy-deref "lazy-ref?" lr))
+  (define id (lazy-ref-id lr))
+  (define o  (get-object id))
+  (if (void? o) (database-load id) o))
 
 (define _dbc_ #f)
 
@@ -565,7 +597,7 @@ database-get-cid! : Symbol Path -> Nat
       (query-exec _dbc_ create-classid-stmt class-string module-string)
       (set! cid (query-maybe-value _dbc_ get-classid-stmt class-string module-string))
       (hash-set! cid-map (cons class-name module-name) cid)))
-  (unless cid (error 'dataabse-get-cid! "could not find or create new classid"))
+  (unless cid (error 'database-get-cid! "could not find or create new classid"))
   cid)
 
     
@@ -652,14 +684,13 @@ database-get-cid! : Symbol Path -> Nat
     [(_ cls (_id arg) ...)
      #'(begin
          (unless (mud-class? cls) (raise-argument-error 'get-singleton "mud-class?" cls))
-         (define cid (mud-class-cid cls))
-         (define oid (query-maybe-value _dbc_ get-singleton-stmt cid))
-         (if oid
-             (lazy-ref oid) ; already exists
-             (local [(define o (new/griftos cls (_id arg) ...))]
-               (query-exec _dbc_ new-singleton-stmt (get-field id o) cid)
-               o
-        )))]))
+         (local [(define cid (mud-class-cid cls))
+                 (define oid (query-maybe-value _dbc_ get-singleton-stmt cid))]
+           (if oid
+               (lazy-ref oid) ; already exists
+               (local [(define o (new/griftos cls (_id arg) ...))]
+                 (query-exec _dbc_ new-singleton-stmt (get-field id o) cid)
+                 o))))]))
 
 
 
@@ -731,3 +762,6 @@ database-get-cid! : Symbol Path -> Nat
     (define thread (hash-ref sync-threads id))
     (break-thread thread)
     (hash-remove! sync-threads id)))
+
+
+  

@@ -6,8 +6,12 @@
          racket/async-channel
          racket/local
          racket/match
+         racket/list
+         json
+         "master.rkt"
          "objects.rkt"
-         "telnet.rkt")
+         "telnet.rkt"
+         "msdp.rkt")
 
 (provide
    (except-out (all-from-out racket/base)
@@ -19,8 +23,12 @@
    (all-from-out racket/async-channel)
    (all-from-out racket/match)
    (all-from-out racket/local)
-   
+   (all-from-out racket/list)
+   (all-from-out json)
+
+   (all-from-out "msdp.rkt")
    (all-from-out "telnet.rkt")
+   (all-from-out "master.rkt")
    
    (except-out (all-from-out "objects.rkt") 
                define-mud-struct)
