@@ -1,7 +1,8 @@
-#lang racket
+#lang racket/base
 
 
 (require json)
+(require racket/list)
 
 (define MSDP_VAR 1)
 (define MSDP_VAL 2)
