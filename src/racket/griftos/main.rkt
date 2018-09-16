@@ -12,6 +12,7 @@
          racket/bool
          racket/set
          racket/string
+         racket/file
          json
          "master.rkt"
          "objects.rkt"
@@ -39,8 +40,9 @@
    (all-from-out racket/bool)
    (all-from-out racket/set)
    (all-from-out racket/string)
+   (all-from-out racket/file)
    (all-from-out json)
-
+   
    (all-from-out "msdp.rkt")
    (all-from-out "telnet.rkt")
    (all-from-out "master.rkt")
