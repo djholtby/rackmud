@@ -117,7 +117,12 @@ Main Loop
 
 
  
-
+(define (make-ticker seconds/tick scheduler)
+  (define (loop)
+    (sleep seconds/tick)
+    (scheduler-tick! scheduler)
+    (loop))
+  loop)
 
 
   
@@ -177,6 +182,7 @@ Main Loop
     (unless (subclass? the-master% saved-object%)
       (raise-argument-error 'start-up "(subclass?/c saved-object%)" master-class))
     (set! master-object  (get-singleton the-master%))
+    (thread (make-ticker (griftos-config-sec/tick cfg) scheduler))
     master-object))
 
 (define (add-user-to-griftos cptr)

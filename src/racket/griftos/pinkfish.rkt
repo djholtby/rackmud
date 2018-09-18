@@ -1,5 +1,5 @@
 #lang racket/base
-(require  racket/list)
+(require  racket/list racket/set)
 (provide pinkfishx)
 
 (define pinkfish-table
@@ -297,12 +297,12 @@
 (define (string->ansi-code s options)
   (define pinkfish-code (hash-ref pinkfish-table (string->symbol (string-upcase s)) (λ () #f)))
   (define xterm-code (regexp-match #px"(B\\_)?XTERM;(\\d+)" s))
-  (cond [pinkfish-code (and (memq 'color options) pinkfish-code)]
-        [(and xterm-code (memq 'xterm256 options))
+  (cond [pinkfish-code (and (set-member?  options 'color) pinkfish-code)]
+        [(and xterm-code (set-member? options '256-color))
          (string-append (if (second xterm-code) "48;" "38;")
                         "5;"
                         (third xterm-code))]
-        [(and xterm-code (memq 'color options))
+        [(and xterm-code (set-member?  options 'color))
          (x256->ansi-color (third xterm-code) (second xterm-code))]
         [else #f]))
 
