@@ -11,6 +11,9 @@
 
 (provide inline-object% define-inline-class* define-inline-class saved-object% define-saved-class* define-saved-class 
          mixin/saved define-saved-class/mixin)
+
+(provide temp-object%)
+
 (provide object-table lazy-ref lazy-ref?  get-object oref save-object get-singleton new/griftos instantiate/griftos make-object/griftos
          send/griftos get-field/griftos set-field!/griftos)
 (provide database-setup database-find-indexed)
@@ -75,8 +78,6 @@
     [(_ id action)
      (if (identifier-binding #'id) #'(void) #'action)]))
 
-;(provide database-connected? set-database-connection!)
-
 
 (define (read-unreadable ignore port . args)
   (define char-buffer (open-output-string))
@@ -102,8 +103,11 @@
   (let loop ([acc empty])
     (define next-char (read-char port))
     (if (char=? #\} next-char)
-        (lazy-ref (or (string->number (list->string (reverse acc)))
-                      (error 'read "unreadable value encountered: #{~a}" (list->string (reverse acc)))) #f)
+        (if (and (cons? acc) (char=? (first acc) #\w))
+            (lazy-ref:weak (or (string->number (list->string (reverse acc)))
+                               (error 'read "unreadable value encountered: #{~a}" (list->string (reverse acc)))) #f)
+            (lazy-ref (or (string->number (list->string (reverse acc)))
+                          (error 'read "unreadable value encountered: #{~a}" (list->string (reverse acc)))) #f))
         (loop (cons next-char acc)))))
   
 
@@ -149,7 +153,6 @@
 (define (set-lib-path! p)
   (unless (path-string? p) (raise-argument-error 'set-lib-path! "path-string?" p))
   (set! lib-path (path->directory-path (simplify-path (string->path p)))))
-  
 
 (define-syntax-rule (filepath)
   (variable-reference->resolved-module-path (#%variable-reference)))
@@ -195,23 +198,35 @@
 (define (mud-ref-print lr port mode)
   (case mode
     ; write mode or print mode
-    [(#t) (write-string (format "#{~v}" (lazy-ref-id lr)) port)]
+    [(#t) (write-string (format "#{~v~v}" (lazy-ref-id lr) (if (lazy-ref:weak? lr) "w" "")) port)]
     ; display mode
-    [(#f) (write-string (format "(lazy-ref ~a ~a)" (lazy-ref-id lr) (lazy-ref-obj lr)) port)]
+    [(#f) (write-string (format "(~v ~a ~a)" (if (lazy-ref:weak? lr) "lazy-ref:weak" "lazy-ref") (lazy-ref-id lr) (lazy-ref-obj lr)) port)]
     ; print mode
-    [else  (write-string (format "(lazy-ref ~v ~v)" (lazy-ref-id lr) (lazy-ref-obj lr)) port)]))
+    [else  (write-string (format "(~v ~v ~v)" (if (lazy-ref:weak? lr) "lazy-ref:weak" "lazy-ref") (lazy-ref-id lr) (lazy-ref-obj lr)) port)]))
+
 
 (struct lazy-ref (id [obj #:mutable]) #:transparent
   #:methods gen:custom-write
   [(define write-proc mud-ref-print)])
 
+(struct lazy-ref:weak lazy-ref ()
+  #:methods gen:custom-write
+  [(define write-proc mud-ref-print)])
 
-(define (oref o)
+(define (oref o [weak? #f])
   (unless (is-a? o saved-object%)
     (raise-argument-error 'oref "(is-a?/c saved-object%)" o))
-  (lazy-ref (get-field id o) o))
+  ((if weak? lazy-ref:weak lazy-ref) (get-field id o) (if weak? (make-weak-box o) o)))
   
-
+(define temp-object%
+  (class* object% (writable<%>)
+    (super-new)
+    (define/public (custom-write port)
+      (write #f port))
+    (define/public (custom-display port)
+      (define out (open-output-string))
+      (display this% out)
+      (display (string-replace (get-output-string out) "class" "object") port))))
 
 
 (define saveable<%> (interface () save save-index load on-create on-load))
@@ -257,8 +272,7 @@
                         (define/public (updated)
                           (set! last-update (now/moment/utc)))
                       
-                        (will-register object-executor this (λ (o)
-                                                              (database-save-object o)))))
+                        (will-register object-executor this database-save-object)))
 
 
 (define inline-object% (class* object% (writable<%> saveable<%>)
@@ -524,7 +538,7 @@ class-field-mutator
                        [(var-save ...) save-list]
                        [(index-save ...) save-index-list]
                        [(var-load ...) load-list]
-                       [name/cid (datum->syntax #'orig-stx (string->symbol (string-append (symbol->string (syntax->datum #'name)) "/cid")))])
+                       [name/string (string-append "#<inline-object" (symbol->string (syntax->datum #'name)) ">")])
            (syntax/loc stx
              (begin
                (ifndef |#%IMPORT LIST%#| (define |#%IMPORT LIST%#| (extract-mudlib-imports (filepath/index))))
@@ -548,6 +562,8 @@ class-field-mutator
                               (define/override (load vars)
                                 var-load ...
                                 (super load vars))
+                              (define/override (custom-display port)
+                                (display name/string port))
                               def-or-expr ...))
                  (register-class-deps name/cid |#%IMPORT LIST%#|))
                (provide name))))))]))
@@ -573,8 +589,7 @@ class-field-mutator
                        [(var-save ...) save-list]
                        [(index-save ...) save-index-list]
                        [(var-load ...) load-list]
-                       [name/cid (datum->syntax #'orig-stx (string->symbol (string-append (symbol->string (syntax->datum #'name)) "/cid")))]
-                       )
+                       [name/string (string-append "#<saved-object" (symbol->string (syntax->datum #'name)) ">")])
            (syntax/loc stx
              (begin
                (ifndef |#%IMPORT LIST%#| (define |#%IMPORT LIST%#| (extract-mudlib-imports (filepath/index))))
@@ -599,6 +614,8 @@ class-field-mutator
                          (define/override (load vars)
                            var-load ...
                            (super load vars))
+                         (define/override (custom-display port)
+                           (display name/string port))
                          def-or-exp ...))
                  (register-class-deps name/cid |#%IMPORT LIST%#|))
                (provide name))))))]))
@@ -733,7 +750,7 @@ class-field-mutator
 
 (define (get-object id)
   (semaphore-wait object-table/semaphore)
-  (define o (hash-ref object-table id (λ()#f)))
+  (define o (hash-ref object-table id #f))
   (begin0
     (if (and o (weak-box-value o))
         (weak-box-value o)
@@ -759,9 +776,13 @@ class-field-mutator
   (unless (lazy-ref? lr) (raise-argument-error 'lazy-deref "lazy-ref?" lr))
   (define id (lazy-ref-id lr))
   (define obj (lazy-ref-obj lr))
+  (when(and obj (lazy-ref:weak? lr))
+    (set! obj (weak-box-value obj)))
   (if obj obj
       (let ([o (or (get-object id) (database-load id))])
-        (set-lazy-ref-obj! lr o)
+        (if (lazy-ref:weak? lr)
+            (set-lazy-ref-obj! lr (make-weak-box o))
+            (set-lazy-ref-obj! lr o))
         o)))
 
 (define db/semaphore (make-semaphore 1))
@@ -925,39 +946,39 @@ database-get-cid! : Symbol Path -> Nat
   
   (if (and obj (or (false? (vector-ref obj 4))
                    (zero? (vector-ref obj 4)))) (local [(define classinfo/v (query-row _dbc_ class-load-stmt (vector-ref obj 0)))
-                                                   (define fields (parameterize ([current-readtable void-reader]) (read (open-input-bytes (vector-ref obj 5)))))
-                                                   (define classname (string->symbol (vector-ref classinfo/v 0)))
-                                                   (define classfile (string->path (vector-ref classinfo/v 1)))
-                                                   (define classfile/resolved (build-path lib-path classfile))
-                                                   (define changes (dynamic-rerequire classfile/resolved)) ;; TODO: Mark changed mudlib source files so old instances can be refreshed
-                                                   (define class (dynamic-require classfile/resolved classname))
-                                                   (define new-object (new class [id id]))
-                                                   (define new-object/tags (get-field tags new-object))
-                                                   (define created (dbtime->moment (vector-ref obj 1)))
-                                                   (define saved (dbtime->moment (vector-ref obj 2)))
-                                                   ]
+                                                        (define fields (parameterize ([current-readtable void-reader]) (read (open-input-bytes (vector-ref obj 5)))))
+                                                        (define classname (string->symbol (vector-ref classinfo/v 0)))
+                                                        (define classfile (string->path (vector-ref classinfo/v 1)))
+                                                        (define classfile/resolved (build-path lib-path classfile))
+                                                        (define changes (dynamic-rerequire classfile/resolved)) ;; TODO: Mark changed mudlib source files so old instances can be refreshed
+                                                        (define class (dynamic-require classfile/resolved classname))
+                                                        (define new-object (new class [id id]))
+                                                        (define new-object/tags (get-field tags new-object))
+                                                        (define created (dbtime->moment (vector-ref obj 1)))
+                                                        (define saved (dbtime->moment (vector-ref obj 2)))
+                                                        ]
 
-                                             ;;; TODO:  This should recompile the changed files, get the timestamps from the changed files, and updated all of their cid's with the timestamp
-                                             ;;; TODO (future): Somewhere in the system is a thread that looks for instances where saved < cid.saved, and does a save -> reload to them
-                                             ;(when (cons? changes) (eprintf "~v\n" changes))
+                                                  ;;; TODO:  This should recompile the changed files, get the timestamps from the changed files, and updated all of their cid's with the timestamp
+                                                  ;;; TODO (future): Somewhere in the system is a thread that looks for instances where saved < cid.saved, and does a save -> reload to them
+                                                  ;(when (cons? changes) (eprintf "~v\n" changes))
  
-                                             (hash-union! indexed-fields fields)
-                                             (send new-object load indexed-fields)
-                                             (set-field! created new-object created)
-                                             (set-field! saved new-object saved)
-                                             (for ([row (in-list tags)])
-                                               (local [(define category (vector-ref row 0))
-                                                       (define tag      (string->symbol (vector-ref row 1)))]
-                                                 (if (hash-has-key? new-object/tags category)
-                                                     (set-add! (hash-ref new-object/tags category) tag)
-                                                     (hash-set! new-object/tags category (mutable-seteq tag)))))
+                                                  (hash-union! indexed-fields fields)
+                                                  (send new-object load indexed-fields)
+                                                  (set-field! created new-object created)
+                                                  (set-field! saved new-object saved)
+                                                  (for ([row (in-list tags)])
+                                                    (local [(define category (vector-ref row 0))
+                                                            (define tag      (string->symbol (vector-ref row 1)))]
+                                                      (if (hash-has-key? new-object/tags category)
+                                                          (set-add! (hash-ref new-object/tags category) tag)
+                                                          (hash-set! new-object/tags category (mutable-seteq tag)))))
                 
-                                             (send new-object on-load)
-                                             (semaphore-wait object-table/semaphore)
-                                             (hash-set! object-table id (make-weak-box new-object))
-                                             (semaphore-post object-table/semaphore)
-                                             new-object)
-      #f))
+                                                  (send new-object on-load)
+                                                  (semaphore-wait object-table/semaphore)
+                                                  (hash-set! object-table id (make-weak-box new-object))
+                                                  (semaphore-post object-table/semaphore)
+                                                  new-object)
+                                                #f))
   
 
 (define (save-object oref)
