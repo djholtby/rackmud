@@ -1,36 +1,62 @@
 #lang racket/base
 
-(require racket/list)
-(require "syncq.rkt" "pq.rkt")
-(provide event-scheduler event-scheduler-time make-event-scheduler scheduler-add! scheduler-tick! scheduler-yield! scheduler-call-and-return!)
+(require racket/list "syncq.rkt" "pq.rkt")
+(provide make-event-scheduler scheduler-add! scheduler-add!/now scheduler-add!/abs scheduler-start! scheduler-stop! scheduler-yield! scheduler-call-and-return!)
 
-(struct event-scheduler (pq pending [time #:mutable])
+
+(struct event-scheduler (pq pending semaphore [next-event #:mutable] [thread #:mutable])
   #:property prop:evt (struct-field-index pending))
 
-(define (make-event-scheduler time)
-  (event-scheduler (make-pq)
-                   (make-syncq)
-                   time))
+(define (make-event-scheduler)
+  (event-scheduler (make-pq) (make-syncq) (make-semaphore 1) #f #f))
 
-;; (scheduler-add! sched time event) adds event to sched, and will dispatch it at the given tick
-;;   (if the current tick is already >= time, it will be immediately dispatched to the pending queue
+(define (scheduler-add! sched delay event)
+  (scheduler-add!/abs sched
+                      (+ delay (inexact->exact (round (current-inexact-milliseconds))))
+                      event))
 
-(define (scheduler-add! sched time event)
-  (if (<= time (event-scheduler-time sched))
-      (sync-enqueue! (event-scheduler-pending sched) event)
-      (pq-add! (event-scheduler-pq sched) time event)))
+(define (scheduler-add!/now sched event)
+  (scheduler-add!/abs sched (inexact->exact (round (current-inexact-milliseconds))) event))
 
-;; (scheduler-tick! sched) increments sched's tick counter, and dispatches any pending events with time <= the new tick
+(define (scheduler-add!/abs sched time event)
+  (semaphore-wait (event-scheduler-semaphore sched))
+  (cond [(<= time (inexact->exact (round (current-inexact-milliseconds))))
+         (sync-enqueue! (event-scheduler-pending sched) event)]
+        [(>= time (or (event-scheduler-next-event sched) +inf.0))
+         (pq-add! (event-scheduler-pq sched) event)]
+        [else
+         (pq-add! (event-scheduler-pq sched) time event)
+         (set-event-scheduler-next-event! sched time)
+         (thread-send (event-scheduler-thread sched) #f)])
+  (semaphore-post (event-scheduler-semaphore sched)))
 
-(define (scheduler-tick! sched)
-  (set-event-scheduler-time! sched (add1 (event-scheduler-time sched)))
-  (pq-tick! (event-scheduler-pq sched)
-            (event-scheduler-time sched)
-            (λ (event)
-              (sync-enqueue! (event-scheduler-pending sched) event))))
+(define (make-scheduler-thunk sched)
+  (letrec ([loop (λ ()
+                   (semaphore-wait (event-scheduler-semaphore sched))
+                   (pq-tick! (event-scheduler-pq sched)
+                             (inexact->exact (round (current-inexact-milliseconds)))
+                             (λ (event)
+                               (sync-enqueue! (event-scheduler-pending sched) event)))
+                   (set-event-scheduler-next-event! sched (pq-peek (event-scheduler-pq sched)))
+                   (semaphore-post (event-scheduler-semaphore sched))
+                   (let ([next-time (and (event-scheduler-next-event sched)
+                                         (max 0 (/ (- (event-scheduler-next-event sched) (current-inexact-milliseconds)) 1000)))])
+                     (cond [(not next-time) (thread-receive)] ; no events are queued, thread sleeps until an enqueue sends a wakeup signal
+                           [(zero? next-time) (sleep 0)]      ; some jackass enqueued an event while we were dequeuing, no need to wait
+                           [else (when (sync/timeout (max 0 (/ (- (event-scheduler-next-event sched) (current-inexact-milliseconds)) 1000)) (thread-receive-evt))
+                                   (thread-receive))]))       ; sleep until time == next-event time (or until a wakeup signal, thread-receive clears the signal)
+                   (loop))])
+    loop))
 
-;; (scheduler-yield sched time) breaks the current worker thread and enqueues an event for the given time
-;;   to finish the worker thread's current thunk
+(define (scheduler-start! sched)
+  (define thunk (make-scheduler-thunk sched))
+  (set-event-scheduler-thread! sched (thread thunk))
+  thunk)
+
+(define (scheduler-stop! sched)
+  (when (event-scheduler-thread sched)
+    (kill-thread (event-scheduler-thread sched))
+    (set-event-scheduler-thread! sched #f)))
 
 (define (scheduler-yield! sched [time 0])
   (let/cc k (scheduler-add! sched time k) (break-thread (current-thread))))
@@ -38,35 +64,17 @@
 
 (define (scheduler-call-and-return! sched thunk [time 0])
   (let/cc k (scheduler-add! sched time (lambda ()
-                                        (k (thunk))))
+                                         (k (thunk))))
     (break-thread (current-thread))))
 
-(module+ test
-  (define my-sched (make-event-scheduler 1))
-
+#|
+(define my-sched (make-event-scheduler))
   (define (worker-thunk)
     (with-handlers ([exn:break? void])
       (let ([msg (sync my-sched)])
-        (when msg (writeln (msg)))))
+        (when msg (msg))))
     (worker-thunk))
-    
-  (define worker-thread (thread worker-thunk))
-  
-  (define (foo lst)
-    (if (empty? lst)
-        (begin0 0 (scheduler-yield! my-sched) (printf "LOL\n") )
-        (+ (first lst) (foo (rest lst)))))
-  
-  (scheduler-add! my-sched 0 (λ () (foo '(1 2 3 4 5 6 7 8 9 10))))
 
-  (define (f2 lst)
-    (define ans (scheduler-call-and-return! my-sched (λ () (foo lst))))
-    (printf "ans=~v\n" ans)
-    ans)
-
-  (scheduler-add! my-sched 0 (λ () (f2 '(1 2 3 4 5 6 7 8 9 10))))
-  
-    
-  )
-
-
+(scheduler-start! my-sched)
+(define worker-thread (thread worker-thunk))
+|#

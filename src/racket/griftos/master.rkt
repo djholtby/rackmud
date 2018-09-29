@@ -10,7 +10,7 @@
 (provide master-object master<%> server-settings start-up)
 (provide add-user-to-griftos)
 
-(provide yield! queue-event current-time seconds->ticks ticks->seconds delay:now delay:one-tick delay:x-minutes delay:x-seconds delay:one-minute delay:one-second send/yield!)
+(provide yield! queue-event)
 
 (provide make-jit set-make-jit!)
 
@@ -64,7 +64,7 @@ Main Loop
 |||||||||||||||||||||#
 
 
-(define scheduler (make-event-scheduler 1))
+(define scheduler (make-event-scheduler))
 (define thread-pool #f)
 
 (define (event-handler)
@@ -77,32 +77,6 @@ Main Loop
 (define (yield! [time 0])
   (scheduler-yield! scheduler time))
 
-(define (current-time)
-  (event-scheduler-time scheduler))
-
-(define (seconds->ticks s)
-  (ceiling (/ s (griftos-config-sec/tick server-settings))))
-
-(define (ticks->seconds t)
-  (* t (griftos-config-sec/tick server-settings)))
-
-(define (delay:now)
-  0)
-
-(define (delay:one-tick)
-  (current-time))
-
-(define (delay:x-minutes x)
-  (+ (current-time) (seconds->ticks (* 60 x))))
-
-(define (delay:x-seconds x)
-  (+ (current-time) (seconds->ticks x)))
-
-(define (delay:one-minute)
-  (+ (current-time) (seconds->ticks 60)))
-
-(define (delay:one-second)
-  (+ (current-time) (seconds->ticks 1)))
 
 (define-syntax (queue-event stx)
   (syntax-case stx ()
@@ -115,17 +89,6 @@ Main Loop
     [(_ obj-expr method parameter ...)
      #'(scheduler-call-and-return! sched (λ () (send/griftos obj-expr method parameter ...)) 0)]))
 
-
- 
-(define (make-ticker seconds/tick scheduler)
-  (define (loop)
-    (sleep seconds/tick)
-    (scheduler-tick! scheduler)
-    (loop))
-  loop)
-
-
-  
 
 ; DB-Settings is a (db-settings (anyof 'postgres 'sqlite 'odbc 'mysql) - type
 ;                               String                                 - user
@@ -182,7 +145,7 @@ Main Loop
     (unless (subclass? the-master% saved-object%)
       (raise-argument-error 'start-up "(subclass?/c saved-object%)" master-class))
     (set! master-object  (get-singleton the-master%))
-    (thread (make-ticker (griftos-config-sec/tick cfg) scheduler))
+    (make-jit (scheduler-start! scheduler))
     master-object))
 
 (define (add-user-to-griftos cptr)

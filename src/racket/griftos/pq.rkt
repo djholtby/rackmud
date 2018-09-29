@@ -20,7 +20,7 @@
   (semaphore-wait (pq-sema q))
   (let ([front (skip-list-iterate-first (pq-sl q))])
     (begin0
-      (and front (skip-list-iterate-key front))
+      (and front (skip-list-iterate-key (pq-sl q) front))
       (semaphore-post (pq-sema q)))))
 
 (define (pq-add! q key val)

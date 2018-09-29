@@ -9,7 +9,7 @@
 (require racket/undefined)
 (require racket/struct)
 
-(provide inline-object% define-inline-class* define-inline-class saved-object% define-saved-class* define-saved-class 
+(provide saved-object% define-saved-class* define-saved-class 
          mixin/saved define-saved-class/mixin)
 
 (provide temp-object%)
@@ -111,21 +111,8 @@
         (loop (cons next-char acc)))))
   
 
-(define (read-inline-object ignore port . args)
-  (define cid (read port))
-  (define fields (read port))
-  (define classinfo/v (query-row _dbc_ class-load-stmt cid))
-  (define classname (string->symbol (vector-ref classinfo/v 0)))
-  (define classfile (string->path (vector-ref classinfo/v 1)))
-  (define classfile/resolved (build-path lib-path classfile))
-  (define changes (dynamic-rerequire classfile/resolved)) ;; TODO: Mark changed mudlib source files so old instances can be refreshed
-  (define class (dynamic-require classfile/resolved classname))
-  (define new-object (new class))
-  (send new-object load fields)
-  (send new-object on-load)
-  new-object)
 
-
+;; TODO?
 (define (read-inline-struct ignore port . args)
   (define lst (read port))
   (cond [(list? lst)
@@ -143,7 +130,6 @@
 (define void-reader (make-readtable #f
                                     #\< 'dispatch-macro read-unreadable
                                     #\{ 'dispatch-macro read-object
-                                    #\! 'dispatch-macro read-inline-object
                                     #\@ 'dispatch-macro read-inline-struct))
 
 
@@ -271,32 +257,17 @@
                         ;;  set-field! which already does this)
                         (define/public (updated)
                           (set! last-update (now/moment/utc)))
-                      
+
+                        (define lock-sema (make-semaphore 1))
+                        (define/public (lock!)
+                          (semaphore-wait lock-sema))
+
+                        (define/public (unlock!)
+                          (semaphore-post lock-sema))
+                        
+                        
                         (will-register object-executor this database-save-object)))
 
-
-(define inline-object% (class* object% (writable<%> saveable<%>)
-                         (super-new)
-                         (define/public (save)
-                           (make-hasheq))
-                         (define/public (save-index)
-                           (make-hasheq))
-                         (define/public (on-create)
-                           (void))
-                         (define/public (on-load)
-                           (void))
-                         (define/public (load flds)
-                           (void))
-                         (abstract get-cid)
-                         (define/public (custom-display port)
-                           (display  "#<inline-object ...>" port))
-                         (define/public (custom-write port)
-                           (define var-hash (send this save))
-                           (hash-union! var-hash (send this save-index))
-                           (display "#!" port)
-                           (write (send this get-cid) port)
-                           (display " " port)
-                           (write var-hash port))))
 
 (define-syntax (send/griftos stx)
   (syntax-case stx ()
@@ -360,18 +331,6 @@ class-field-mutator
                          super-expression
                          () 
                          body ...)))]))
-
-(define-syntax (define-inline-class stx)
-  (syntax-case stx ()
-    [(_ name super-expression body ...)
-     (with-syntax ([orig-stx stx])
-       (syntax/loc stx (define-inline-class/priv orig-stx name super-expression () body ...)))]))
-
-(define-syntax (define-inline-class* stx)
-  (syntax-case stx ()
-    [(_ name super-expression (interface-expression ...) body ...)
-     (with-syntax ([orig-stx stx])
-       (syntax/loc stx (define-inline-class/priv orig-stx name super-expression (interface-expression ...) body ...)))]))
 
 
 
@@ -519,54 +478,6 @@ class-field-mutator
 
 
 
-(define-syntax (define-inline-class/priv stx)
-  (syntax-case stx ()
-    [(_ orig-stx name super-expression (interface-expr ...) body ...)
-     (let-values ([(wrapped-def-or-exprs saved-class-vars indexed-class-vars)
-                   (wrap-saved-class-exprs (syntax->list #'(body ...)))])
-       (let ([save-list (map (λ (id) (with-syntax ([id id])
-                                       #'(hash-set! result 'id id)))
-                             saved-class-vars)]
-             [save-index-list (map (λ (id) (with-syntax ([id id])
-                                             #'(hash-set! result 'id id)))
-                                   indexed-class-vars)]
-             ;; List of syntaxes needed to load the saved-fields
-             [load-list (map (λ (id) (with-syntax ([id id])
-                                       #'(set! id (hash-ref vars 'id void))))
-                             (append indexed-class-vars saved-class-vars))])
-         (with-syntax ([(def-or-expr ...) wrapped-def-or-exprs]
-                       [(var-save ...) save-list]
-                       [(index-save ...) save-index-list]
-                       [(var-load ...) load-list]
-                       [name/string (string-append "#<inline-object" (symbol->string (syntax->datum #'name)) ">")])
-           (syntax/loc stx
-             (begin
-               (ifndef |#%IMPORT LIST%#| (define |#%IMPORT LIST%#| (extract-mudlib-imports (filepath/index))))
-               (define name undefined)
-               (local [(define name/cid (database-get-cid! 'name (relative-module-path (filepath))))]
-                 
-                 (set! name (class* (let ([se super-expression])
-                                      (if (subclass? se inline-object%)
-                                          se
-                                          (raise-argument-error 'define-inline-class "(subclass?/c inline-object%)" se)))
-                              (interface-expr ...)
-                              (define/override (get-cid) name/cid)
-                              (define/override (save)
-                                (let ([result (super save)])
-                                  var-save ...
-                                  result))
-                              (define/override (save-index)
-                                (let ([result (super save-index)])
-                                  index-save ...
-                                  result))
-                              (define/override (load vars)
-                                var-load ...
-                                (super load vars))
-                              (define/override (custom-display port)
-                                (display name/string port))
-                              def-or-expr ...))
-                 (register-class-deps name/cid |#%IMPORT LIST%#|))
-               (provide name))))))]))
                        
 
 (define-syntax (define-saved-class/priv stx)
@@ -602,6 +513,7 @@ class-field-mutator
                                      (raise-argument-error 'define-saved-class "(subclass?/c saved-object%)" se)))
 
                          (interface-expr ...)
+
                          (define/override (get-cid) name/cid)
                          (define/override (save)
                            (let ([result (super save)])
