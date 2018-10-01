@@ -109,7 +109,7 @@ Main Loop
 ;                        positive-real)                   - sec/tick
 
 
-(struct griftos-config (mudlib master-file master-class encodings database threads sec/tick) #:transparent)
+(struct griftos-config (mudlib www master-file master-class encodings database threads) #:transparent)
 
 
 ; (startup cfg) starts the mud racket side running using the provided config struct cfg
@@ -122,6 +122,7 @@ Main Loop
 
 (define (start-up cfg)
   (let ([mudlib (griftos-config-mudlib cfg)]
+        [www-root (griftos-config-www cfg)]
         [master-file (griftos-config-master-file cfg)]
         [master-class (griftos-config-master-class cfg)]
         [db-type (db-settings-type (griftos-config-database cfg))]
