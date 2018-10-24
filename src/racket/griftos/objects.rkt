@@ -1,6 +1,6 @@
 #lang racket/base
 
-(require racket/class racket/list racket/bool racket/string racket/path racket/match racket/local racket/set
+(require racket/class racket/list racket/bool racket/string racket/path racket/match racket/local racket/set racket/contract racket/logging
          (for-syntax racket/base racket/path) syntax/modresolve)
 (require db db/util/datetime gregor)
 (require racket/rerequire)
@@ -14,12 +14,15 @@
 
 (provide temp-object%)
 
-(provide object-table lazy-ref lazy-ref?  get-object oref save-object get-singleton new/griftos instantiate/griftos make-object/griftos
-         send/griftos get-field/griftos set-field!/griftos)
+(provide object-table saved-object=? lazy-ref lazy-ref?  get-object oref save-object get-singleton new/griftos instantiate/griftos
+         make-object/griftos send/griftos get-field/griftos set-field!/griftos is-a?/griftos is-a?/c/griftos)
+
 (provide database-setup database-find-indexed)
-(provide tickable<%> tickable? listener<%> listener?)
+
 (provide cid->paths path->cids)
 (provide lib-path  path-begins-with? filepath relative-module-path set-lib-path!)
+(provide log-level? database-log)
+
 
 (define class-dep-sema (make-semaphore 1))
 (define cid->paths (make-hasheqv))
@@ -81,15 +84,17 @@
 
 (define (read-unreadable ignore port . args)
   (define char-buffer (open-output-string))
-  (let loop ()
+  (let loop ([pound? #f]
+             [counter 1])
     (define next-char (read-char port))
-    (cond [(char=? #\> next-char)
+    (cond [(and (= counter 1) (char=? #\> next-char))
            (define in-buffer (open-input-string (get-output-string char-buffer)))
            (define word (read in-buffer))
            (begin0
              (case word
                [(void) (void)]
                [(undefined) undefined]
+               [(mutable-set:) (apply mutable-set (let loop ([acc '()]) (define v (read in-buffer)) (if (eof-object? v) acc (loop (cons v acc)))))]
                [(moment)
                 (define moment-info (read-line in-buffer))
                 (iso8601/tzid->moment (string-trim moment-info))]
@@ -97,7 +102,7 @@
              (close-output-port char-buffer)
              (close-input-port in-buffer))]
           [else (write-char next-char char-buffer)
-                (loop)])))
+                (loop (char=? next-char #\#) (if (char=? next-char #\>) (sub1 counter) (if (and pound? (char=? next-char #\<)) (add1 counter) counter)))])))
 
 (define (read-object ignore port . args)
   (let loop ([acc empty])
@@ -184,26 +189,44 @@
 (define (mud-ref-print lr port mode)
   (case mode
     ; write mode or print mode
-    [(#t) (write-string (format "#{~v~v}" (lazy-ref-id lr) (if (lazy-ref:weak? lr) "w" "")) port)]
+    [(#t) (write-string (format "#{~v~a}" (lazy-ref-id lr) (if (lazy-ref:weak? lr) "w" "")) port)]
     ; display mode
-    [(#f) (write-string (format "(~v ~a ~a)" (if (lazy-ref:weak? lr) "lazy-ref:weak" "lazy-ref") (lazy-ref-id lr) (lazy-ref-obj lr)) port)]
+    [(#f) (write-string (format "(~a ~a ~a)" (if (lazy-ref:weak? lr) "lazy-ref:weak" "lazy-ref") (lazy-ref-id lr) (lazy-ref-obj lr)) port)]
     ; print mode
-    [else  (write-string (format "(~v ~v ~v)" (if (lazy-ref:weak? lr) "lazy-ref:weak" "lazy-ref") (lazy-ref-id lr) (lazy-ref-obj lr)) port)]))
+    [else  (write-string (format "(~a ~v ~a)" (if (lazy-ref:weak? lr) "lazy-ref:weak" "lazy-ref") (lazy-ref-id lr) (lazy-ref-obj lr)) port)]))
+
+
+
 
 
 (struct lazy-ref (id [obj #:mutable]) #:transparent
   #:methods gen:custom-write
-  [(define write-proc mud-ref-print)])
+  [(define write-proc mud-ref-print)]
+  #:methods gen:equal+hash
+  [(define equal-proc (lambda (a b r?) (saved-object=? a b)))
+   (define hash-proc  (lambda (l hash-code) (hash-code (cons 'lazy-ref (lazy-ref-id l)))))
+   (define hash2-proc (lambda (l hash-code) (hash-code (cons 'lazy-ref (lazy-ref-id l)))))])
 
 (struct lazy-ref:weak lazy-ref ()
   #:methods gen:custom-write
-  [(define write-proc mud-ref-print)])
+  [(define write-proc mud-ref-print)]
+  #:methods gen:equal+hash
+  [(define equal-proc (lambda (a b r?) (saved-object=? a b)))
+   (define hash-proc  (lambda (l hash-code) (hash-code (cons 'lazy-ref (lazy-ref-id l)))))
+   (define hash2-proc (lambda (l hash-code) (hash-code (cons 'lazy-ref (lazy-ref-id l)))))])
 
 (define (oref o [weak? #f])
   (unless (is-a? o saved-object%)
     (raise-argument-error 'oref "(is-a?/c saved-object%)" o))
   ((if weak? lazy-ref:weak lazy-ref) (get-field id o) (if weak? (make-weak-box o) o)))
-  
+
+(define (saved-object=? a b)
+  (let ([a-id (if (lazy-ref? a) (lazy-ref-id a) (get-field id a))]
+        [b-id (cond [(lazy-ref? b) (lazy-ref-id b)]
+                    [(and (object? b) (is-a? b saved-object%)) (get-field id b)]
+                    [else #f])])
+    (and b-id (= a-id b-id))))
+
 (define temp-object%
   (class* object% (writable<%>)
     (super-new)
@@ -215,9 +238,9 @@
       (display (string-replace (get-output-string out) "class" "object") port))))
 
 
-(define saveable<%> (interface () save save-index load on-create on-load))
+(define saveable<%> (interface () save save-index load on-create on-load lock! unlock! updated))
 
-(define saved-object% (class* object% (writable<%> saveable<%>)
+(define saved-object% (class* object% (writable<%> saveable<%> equal<%>)
                         (super-new)
                         (init-field [id (void)]
                                     [name "object"])
@@ -239,6 +262,18 @@
                         (define/public (save-index)
                           (make-hasheq))
 
+
+                        (define/public (equal-to? other r?)
+                          (cond [(lazy-ref? other) (= id (lazy-ref-id other))]
+                                [(is-a? other saved-object%) (= id (get-field id other))]
+                                [else #f]))
+
+                        (define/public (equal-hash-code-of hash-code)
+                          (hash-code id))
+
+                        (define/public (equal-secondary-hash-code-of hash-code)
+                          (hash-code id))
+                        
                         (abstract get-cid)
 
                         (define/public (on-create) (set-field! loaded this (now/moment/utc)))
@@ -248,8 +283,11 @@
                         (define/public (load flds) (void))
 
                         (define/public (custom-write port)
-                          (write (format "#{~v}" id) port))
-
+                          (write #\# port)
+                          (write #\{ port)
+                          (write id port)
+                          (write #\} port))
+                          
                         (define/public (custom-display port)
                           (display  "#<saved-object ...>" port))
 
@@ -532,78 +570,6 @@ class-field-mutator
                  (register-class-deps name/cid |#%IMPORT LIST%#|))
                (provide name))))))]))
 
-#|||||||||||||||||||||||||||||||||||||||||||||||
-
-                CLASS INTERFACES
-
-||||||||||||||||||||||||||||||||||||||||||||||||#
-
-
-
-;; guard-for-prop:tickable:  (Vector (X -> Real Real) (X -> Void))
-(define (guard-for-prop:tickable v si)
-  (unless (and (vector? v)
-               (= 2 (vector-length v))
-               (procedure? (vector-ref v 0))
-               (procedure-arity-includes? (vector-ref v 0) 1)
-               (procedure? (vector-ref v 1))
-               (procedure-arity-includes? (vector-ref v 1) 1))
-    (raise-argument-error 'guard-for-prop:tickable "(vector procedure? procedure?)" v))
-  v)
-
-(define-values (prop:tickable tickable? tickable-ref) (make-struct-type-property 'tickable guard-for-prop:tickable))
-
-(define (tickable->evt t)
-  (unless (tickable? t) (raise-argument-error 'tickable->evt "tickable?" t))
-  (define tick-value (tickable-ref t))
-  (define tick (vector-ref tick-value 0))
-  (define tock (vector-ref tick-value 1))
-  (wrap-evt (alarm-evt (tick t))
-            (λ (e) (tock t))))
-
-
-
-(define tickable<%> (interface* ()
-                                ([prop:tickable
-                                  (vector (λ (o)
-                                            (define-values (tick offset) (send o get-tick))
-                                            (+ (* tick (floor (/ (+ offset (current-inexact-milliseconds)) tick))) tick))
-                                          (λ (o) (send o on-tock)))])
-                                get-tick on-tock))
-
-
-  
-;; guard-for-prop:listener: (Vector (X -> AsyncChannel) (X String -> Any)
-(define (guard-for-prop:listener v si)
-  (unless (and (vector? v)
-               (= 2 (vector-length v))
-               (procedure? (vector-ref v 0))
-               (procedure-arity-includes? (vector-ref v 0) 1)
-               (procedure? (vector-ref v 1))
-               (procedure-arity-includes? (vector-ref v 1) 2))
-    (raise-argument-error 'guard-for-prop:listener "(vector procedure? procedure?)" v))
-  v)
-               
-(define-values (prop:listener listener? listener-ref) (make-struct-type-property 'listener guard-for-prop:listener))
-
-(define (listener->evt l)
-  (unless (listener? l) (raise-argument-error 'listener->evt "listener?" l))
-  (define chan ((vector-ref (listener-ref l) 0) l))
-  (define on-msg (vector-ref (listener-ref l) 1))
-  (wrap-evt chan (λ (msg) (on-msg l msg))))
-
-(define listener<%> (interface* ()
-                                ([prop:listener
-                                  (vector (λ (o) (send o get-listener-channel))
-                                          (λ (o msg) (send o on-message msg)))])
-                                get-listener-channel on-message))
-
-
-
-
-
-
-
 
 #|||||||||||||||||||||||||||||||||||||||||||||||
 
@@ -716,6 +682,8 @@ class-field-mutator
 (define search-index-stmt #f)
 (define get-singleton-stmt #f)
 (define new-singleton-stmt #f)
+(define log-stmt #f)
+(define logger-thread #f)
 
 
 (define (database-connected?)
@@ -793,11 +761,45 @@ class-field-mutator
                                                    (if is-postgres? "$1" "?")
                                                    (if is-postgres? "$2" "?"))))
                                                 
-                                      
+    (set! log-stmt (prepare conn (format "INSERT INTO logfile (level, module, code, description) values (~a, ~a, ~a, ~a)"
+                                         (if is-postgres? "$1" "?")
+                                         (if is-postgres? "$2" "?")
+                                         (if is-postgres? "$3" "?")
+                                         (if is-postgres? "$4" "?"))))
 
-    
-    ))
-  
+    (when (thread? logger-thread)
+      (kill-thread logger-thread))
+
+    (set! logger-thread
+          (thread
+           (λ ()
+             (let loop ()
+               (match (sync griftos-log-rec)
+                 [(vector level msg (list module code) 'griftos)
+                  (database-log level module code msg)]
+                 [(vector level msg _ _)
+                  (database-log level "Racket" #f msg)])
+               (loop)))))))
+
+(define (log-level->int ll)
+  (or (index-of '(none fatal error warning info debug) ll eq?) 0))
+
+(define griftos-logger (make-logger #f (current-logger) 'info #f))
+                                    
+(current-logger griftos-logger)
+                           
+(define griftos-log-rec (make-log-receiver griftos-logger 'warning #f 'debug 'griftos))
+                           
+
+(define (database-log level module code description)
+  ;(-> log-level/c (or/c string? false/c) (or/c exact-nonnegative-integer? false/c) string? void?)
+  (query-exec _dbc_ log-stmt
+              (log-level->int level)
+              (if module module sql-null)
+              (if code code sql-null)
+              description))
+              
+
 (define (database-disconnect!)
   (when (database-connected?)
     (disconnect _dbc_)
@@ -957,6 +959,58 @@ database-get-cid! : Symbol Path -> Nat
                  (query-exec _dbc_ new-singleton-stmt (get-field id o) cid)
                  (lazy-ref (get-field id o) o)))))]))
 
+(define-syntax (is-a?/griftos stx)
+  (syntax-case stx ()
+    [(_ v-expr type)
+     #'(let ([v v-expr])
+         (is-a? (if (lazy-ref? v) (lazy-deref v) v) type))]))
+
+
+(struct is-a?-ctc/griftos (<%>)
+  #:property prop:flat-contract
+  (build-flat-contract-property
+   #:name
+   (λ (ctc)
+     (define <%> (is-a?-ctc/griftos-<%> ctc))
+     (define name (object-name <%>))
+     (cond [name `(is-a?/c ,name)]
+           [(class? <%>) '(is-a?/c unknown%)]
+           [else '(is-a?/c unknown<%>)]))
+   #:first-order
+   (λ (ctc)
+     (define <%> (is-a?-ctc/griftos-<%> ctc))
+     (λ (v)
+       (is-a?/griftos v <%>)))
+   #:stronger
+   (λ (this other)
+     (define <%> (is-a?-ctc/griftos-<%> this))
+     (if (is-a?-ctc/griftos other)
+         (let ([other<%> (is-a?-ctc/griftos-<%> other)])
+           (cond [(and (class? <%>) (class? other<%>))
+                  (subclass? <%> other<%>)]
+                 [(and (class? <%>) (interface? other<%>))
+                  (implementation? <%> other<%>)]
+                 [(and (interface? <%>) (interface? other<%>))
+                  (interface-extension? <%> other<%>)]
+                 [else #f]))
+         #f))
+   #:equivalent
+   (λ (this other)
+     (and (is-a?-ctc/griftos other)
+          (equal? (is-a?-ctc/griftos-<%> this)
+                  (is-a?-ctc/griftos-<%> other))))))
+         
+(define (is-a?/c/griftos type)
+  (unless (or (interface? type)
+              (class? type))
+    (raise-argument-error
+     'is-a?/c
+     ("or/c interface? class?")
+     type))
+  (is-a?-ctc/griftos type))
+
+  
+
 
 (define-syntax (new/griftos stx)
   (syntax-case stx ()
@@ -1000,6 +1054,7 @@ database-get-cid! : Symbol Path -> Nat
   (define cid (send o get-cid))
   (define name (get-field name o))
   (define created (get-field created o))
+  (send o on-create)
   ;"INSERT INTO objects (class, created, name, deleted) VALUES (~v, ~v, ~v, false)
   (define new-obj-result (query _dbc_ new-object-stmt cid (moment->dbtime created) name))
   (cond [(and (simple-result? new-obj-result) (assoc 'insert-id (simple-result-info new-obj-result)))
@@ -1009,7 +1064,7 @@ database-get-cid! : Symbol Path -> Nat
               (= 1 (length (rows-result-rows new-obj-result))))
          (set-field! id o (vector-ref (first (rows-result-rows new-obj-result)) 0))]
         [else (error 'new "unexpected database result (~v) when instantiating new object" new-obj-result)])
-  (send o on-create)
+  
   (send o on-load)
   (database-save-object o)
   (semaphore-wait object-table/semaphore)

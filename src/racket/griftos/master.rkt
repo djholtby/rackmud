@@ -80,7 +80,7 @@ Main Loop
 (define (event-handler)
   (define event (sync scheduler))
   (with-handlers ([exn:break? void]
-                  [(λ (e) #t) (λ (e) (eprintf "event exception ~e" e))])
+                  [(λ (e) #t) (λ (e) ((error-display-handler) "event exception:" e))])
     (when event (event)))
   (event-handler))
 

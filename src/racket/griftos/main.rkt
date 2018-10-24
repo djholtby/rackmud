@@ -13,6 +13,7 @@
          racket/set
          racket/string
          racket/file
+         racket/logging
          json
          "master.rkt"
          "objects.rkt"
@@ -28,7 +29,7 @@
 
  
  (except-out (all-from-out racket/class)
-             send get-field set-field! new instantiate make-object
+             send get-field set-field! new instantiate make-object is-a? is-a?/c
              ) ;; I'm sure there's stuff that should be cut...
  (all-from-out racket/base racket/undefined
                racket/async-channel
@@ -41,6 +42,7 @@
                racket/set
                racket/string
                racket/file
+               racket/logging
                json)
    
    
@@ -58,7 +60,9 @@
              set-field!/griftos
              new/griftos
              make-object/griftos
-             instantiate/griftos)
+             instantiate/griftos
+             is-a?/griftos
+             is-a?/c/griftos)
    
  (rename-out  
   [send/griftos send]
@@ -67,6 +71,8 @@
   [new/griftos new]
   [instantiate/griftos instantiate]
   [make-object/griftos make-object]
+  [is-a?/griftos is-a?]
+  [is-a?/c/griftos is-a?/c]
   ))
 
 
