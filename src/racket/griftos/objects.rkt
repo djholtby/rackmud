@@ -508,7 +508,7 @@ class-field-mutator
                        [(var-save ...) save-list]
                        [(index-save ...) save-index-list]
                        [(var-load ...) load-list]
-                       [name/string (string-append "#<saved-object" (symbol->string (syntax->datum #'name)) ">")])
+                       [name/string (string-append "#<saved-object:" (symbol->string (syntax->datum #'name)) ">")])
            (syntax/loc stx
              (begin
                (define name undefined)
@@ -749,7 +749,7 @@ class-field-mutator
              (let loop ()
                (match (sync griftos-log-rec)
                  [(vector level msg data topic)
-                  (database-log level (or topic "Racket") msg (backtrace data))])
+                  (database-log level (or topic "racket") msg (backtrace data))])
                (loop)))))))
 
 (define (log-level->int ll)

@@ -22,6 +22,7 @@
          "syncq.rkt"
          "pq.rkt"
          "scheduler.rkt"
+         "logger.rkt"
          )
 
 (provide
@@ -53,6 +54,7 @@
  (all-from-out "syncq.rkt")
  (all-from-out "pq.rkt")
  (all-from-out "scheduler.rkt")
+ (all-from-out "logger.rkt")
    
  (except-out (all-from-out "objects.rkt") 
              send/griftos
