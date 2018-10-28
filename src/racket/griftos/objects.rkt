@@ -14,10 +14,10 @@
 
 (provide temp-object%)
 
-(provide object-table saved-object=? lazy-ref lazy-ref?  get-object oref save-object get-singleton new/griftos instantiate/griftos
+(provide object-table object-table/semaphore saved-object=? lazy-ref lazy-ref?  get-object oref save-object get-singleton new/griftos instantiate/griftos
          make-object/griftos send/griftos get-field/griftos set-field!/griftos is-a?/griftos is-a?/c/griftos)
 
-(provide database-setup database-find-indexed)
+(provide database-setup database-disconnect database-find-indexed)
 
 (provide cid->paths path->cids)
 (provide lib-path  path-begins-with? filepath relative-module-path set-lib-path!)
@@ -49,38 +49,6 @@
   (define-values (name mpi/2) (module-path-index-split mpi))
   (let ([path (if (or name mpi/2) (resolve-module-path-index mpi  parent) #f)])
     (if (path-string? path) path #f)))
-
-(define (extract-mudlib-imports self-path)
-  (let loop ([module self-path]
-             [parent (path->string (resolve-module-path-index self-path))]
-             [ans (make-hasheq)])
-    (define new-parent (resolve-module-path-index module parent))
-    (define full-path (module-path module parent))
-    (unless (or (hash-ref ans module #f)
-                (not (and full-path (path-begins-with? full-path lib-path))))
-      (for* ([import (in-list (module->imports new-parent))]
-             [module:2 (in-list (cdr import))])
-        (loop module:2 new-parent ans))
-      (hash-set! ans module full-path))
-    ans))
-        
-
-(define-syntax (defined? stx)
-  (syntax-case stx ()
-    [(_ id)
-     (with-syntax ([v (identifier-binding #'id)])
-       #''v)]))
-
-(define-syntax (ifdef stx)
-  (syntax-case stx ()
-    [(_ id action)
-     (if (identifier-binding #'id) #'action #'(void))]))
-
-(define-syntax (ifndef stx)
-  (syntax-case stx ()
-    [(_ id action)
-     (if (identifier-binding #'id) #'(void) #'action)]))
-
 
 (define (read-unreadable ignore port . args)
   (define char-buffer (open-output-string))
@@ -230,6 +198,8 @@
 (define temp-object%
   (class* object% (writable<%>)
     (super-new)
+    (init-field [name "temp-object"])
+    (field [id #f])
     (define/public (custom-write port)
       (write #f port))
     (define/public (custom-display port)
@@ -541,7 +511,6 @@ class-field-mutator
                        [name/string (string-append "#<saved-object" (symbol->string (syntax->datum #'name)) ">")])
            (syntax/loc stx
              (begin
-               (ifndef |#%IMPORT LIST%#| (define |#%IMPORT LIST%#| (extract-mudlib-imports (filepath/index))))
                (define name undefined)
                (local [(define name/cid (database-get-cid! 'name (relative-module-path (filepath))))]
                  (set! name
@@ -566,8 +535,7 @@ class-field-mutator
                            (super load vars))
                          (define/override (custom-display port)
                            (display name/string port))
-                         def-or-exp ...))
-                 (register-class-deps name/cid |#%IMPORT LIST%#|))
+                         def-or-exp ...)))
                (provide name))))))]))
 
 
@@ -689,6 +657,11 @@ class-field-mutator
 (define (database-connected?)
   (and (connection? _dbc_) (connected? _dbc_)))
 
+(define (database-disconnect)
+  (when (connection? _dbc_)
+    (disconnect _dbc_)
+    (set! _dbc_ #f)))
+
 (define (set-database-connection! conn)
   (unless (connection? conn) (raise-argument-error 'set-database-connection! "connection?" conn))
   (if (symbol=? (dbsystem-name (connection-dbsystem conn)) 'sqlite3) ;; TODO, does anything else not support timestamp???
@@ -761,7 +734,7 @@ class-field-mutator
                                                    (if is-postgres? "$1" "?")
                                                    (if is-postgres? "$2" "?"))))
                                                 
-    (set! log-stmt (prepare conn (format "INSERT INTO logfile (level, module, code, description) values (~a, ~a, ~a, ~a)"
+    (set! log-stmt (prepare conn (format "INSERT INTO logfile (level, module, description, backtrace) values (~a, ~a, ~a, ~a)"
                                          (if is-postgres? "$1" "?")
                                          (if is-postgres? "$2" "?")
                                          (if is-postgres? "$3" "?")
@@ -775,10 +748,8 @@ class-field-mutator
            (λ ()
              (let loop ()
                (match (sync griftos-log-rec)
-                 [(vector level msg (list module code) 'griftos)
-                  (database-log level module code msg)]
-                 [(vector level msg _ _)
-                  (database-log level "Racket" #f msg)])
+                 [(vector level msg data topic)
+                  (database-log level (or topic "Racket") msg (backtrace data))])
                (loop)))))))
 
 (define (log-level->int ll)
@@ -790,6 +761,13 @@ class-field-mutator
                            
 (define griftos-log-rec (make-log-receiver griftos-logger 'warning #f 'debug 'griftos))
                            
+(define (backtrace cms)
+  (if (continuation-mark-set? cms)
+      (let ([out (open-output-string)])
+        (for ([context (in-list (continuation-mark-set->context cms))])
+          (displayln (format "~a : ~a" (or (car context) "???") (if (srcloc? (cdr context)) (srcloc->string (cdr context)) "No source information available")) out))
+        (get-output-string out))
+      #f))
 
 (define (database-log level module code description)
   ;(-> log-level/c (or/c string? false/c) (or/c exact-nonnegative-integer? false/c) string? void?)
@@ -896,8 +874,9 @@ database-get-cid! : Symbol Path -> Nat
   
 
 (define (save-object oref)
-  (unless (lazy-ref? oref) (raise-argument-error 'save-object "lazy-ref?" oref))
-  (define o (get-object (lazy-ref-id oref)))
+  (unless (or (object? oref) (lazy-ref? oref))
+    (raise-argument-error 'save-object "(or/c object? lazy-ref?)" oref))
+  (define o (if (lazy-ref? oref) (get-object (lazy-ref-id oref)) oref))
   (if o (database-save-object o) #f))
 
 ;; database-save-object: (InstanceOf MudObject%) -> Bool

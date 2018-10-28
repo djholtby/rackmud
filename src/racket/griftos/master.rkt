@@ -10,11 +10,11 @@
 (require "telnet.rkt")
 (require "scheduler.rkt")
 (require racket/rerequire)
-(provide master-object master<%> server-settings start-up)
+(provide master-object master<%> server-settings start-up shut-down)
 (provide add-user-to-griftos)
 
 (provide yield! queue-event)
-(provide update-certs stop-webserver)
+(provide update-certs webserver-stop)
 (provide make-jit set-make-jit!)
 
 
@@ -64,6 +64,7 @@ The connection manager will send a telnet-object to it whenever a user connects.
   (interface ()
     ;; on-connect (CPointer user_info_t) -> Telnet
     on-connect
+    on-shutdown
     get-servlet-handler
     get-websocket-mapper
     ))
@@ -136,7 +137,7 @@ Main Loop
 (define (update-certs cert key)
   (renew-websocket-server-certificate webserver cert key))
 
-(define (stop-webserver)
+(define (webserver-stop)
   (stop-websocket-server webserver))
   
 
@@ -234,9 +235,23 @@ Main Loop
 (define (add-user-to-griftos cptr)
   (unless master-object
     (error 'add-user-to-griftos "GriftOS has not been started!"))
-  (send/griftos master-object on-connect cptr))
+  (when (lazy-ref? master-object)
+    (send/griftos master-object on-connect cptr)))
   
-
+(define (shut-down)
+  (send/griftos master-object on-shutdown)
+  (set! master-object 'shutting-down)
+  (when webserver
+    (webserver-stop))
+  (for-each kill-thread thread-pool)
+  (semaphore-wait object-table/semaphore)
+  (hash-for-each object-table
+                 (λ (oid obj)
+                   (let ([o (weak-box-value obj)])
+                     (when o (save-object o)))))
+  (semaphore-post object-table/semaphore)
+  (database-disconnect))
+  
 
 #|
 The Master Object is responsible for saving any server-wide values that need saving.
