@@ -1105,12 +1105,13 @@ database-get-cid! : Symbol Path -> Nat
   
 (define (make-new-text txt lang enc)
   (define result (query _dbc_ new-text-stmt (string-foldcase (symbol->string lang)) (symbol->mib enc) txt))
-  (text (cond [(and (simple-result? result) (assoc 'insert-id (simple-result-info result)))
+  (cond [(and (simple-result? result) (assoc 'insert-id (simple-result-info result)))
                (cdr (assoc 'insert-it (simple-result-info result)))]
               [(and (rows-result? result)
                     (= 1 (length (rows-result-headers result)))
                     (= 1 (length (rows-result-rows result))))
-               (vector-ref (first (rows-result-rows result)) 0)]) txt))
+               (vector-ref (first (rows-result-rows result)) 0)]
+              [else #f]))
 
 (define (text->string t lang enc)
   (if (and (database-connected?) (text-id t))
