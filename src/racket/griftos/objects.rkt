@@ -8,20 +8,24 @@
 (require racket/hash)
 (require racket/undefined)
 (require racket/struct)
+(require "charset.rkt")
 
 (provide saved-object% define-saved-class* define-saved-class 
          mixin/saved define-saved-class/mixin)
 
 (provide temp-object%)
 
-(provide object-table object-table/semaphore saved-object=? lazy-ref lazy-ref?  get-object oref save-object get-singleton new/griftos instantiate/griftos
-         make-object/griftos send/griftos get-field/griftos set-field!/griftos is-a?/griftos is-a?/c/griftos)
+(provide object-table object-table/semaphore saved-object=? lazy-ref lazy-ref?  get-object oref save-object get-singleton new/griftos
+         instantiate/griftos make-object/griftos send/griftos get-field/griftos set-field!/griftos is-a?/griftos is-a?/c/griftos)
 
 (provide database-setup database-disconnect database-find-indexed)
 
 (provide cid->paths path->cids)
 (provide lib-path  path-begins-with? filepath relative-module-path set-lib-path!)
 (provide log-level? database-log)
+
+(provide text text? make-text text->string add-text-translation)
+
 
 
 (define class-dep-sema (make-semaphore 1))
@@ -62,7 +66,8 @@
              (case word
                [(void) (void)]
                [(undefined) undefined]
-               [(mutable-set:) (apply mutable-set (let loop ([acc '()]) (define v (read in-buffer)) (if (eof-object? v) acc (loop (cons v acc)))))]
+               [(mutable-set:) (apply mutable-set (let loop ([acc '()]) (define v (read in-buffer)) (if (eof-object? v) acc (loop
+                                                                                                                             (cons v acc)))))]
                [(moment)
                 (define moment-info (read-line in-buffer))
                 (iso8601/tzid->moment (string-trim moment-info))]
@@ -70,7 +75,8 @@
              (close-output-port char-buffer)
              (close-input-port in-buffer))]
           [else (write-char next-char char-buffer)
-                (loop (char=? next-char #\#) (if (char=? next-char #\>) (sub1 counter) (if (and pound? (char=? next-char #\<)) (add1 counter) counter)))])))
+                (loop (char=? next-char #\#) (if (char=? next-char #\>) (sub1 counter) (if (and pound? (char=? next-char #\<)) (add1 counter)
+                                                                                           counter)))])))
 
 (define (read-object ignore port . args)
   (let loop ([acc empty])
@@ -316,7 +322,7 @@ class-field-mutator
            (send (lazy-deref o) updated)))]))
 
 ;; (define-saved-class name super-expression mud-defn-or-expr ...) defines a saved-class descended from super-expression
-;; mud-defn-or-expr: as the regular class defn-or-expr, but with nosave varieties for all fields (e.g. "define" has the "define/nosave" variant)
+;; mud-defn-or-expr: as the regular class defn-or-expr, but with nosave varieties for all fields 
 
 (define-syntax (define-saved-class* stx)
   (syntax-case stx ()
@@ -356,7 +362,7 @@ class-field-mutator
            (provide name))))]))
                
 
-;; (wrap-saved-class-exprs def-or-exprs) converts all /nosave and /index variants to plain class syntax, and returns a list of the new syntaxes,
+;; (wrap-saved-class-exprs def-or-exprs) converts all /nosave and /index variants to plain class syntax, and returns a list of the new syntaxes
 ;;   a list of all saved variables, and a list of all indexed variables
 
 (define-for-syntax (wrap-saved-class-exprs def-or-exprs)
@@ -650,6 +656,10 @@ class-field-mutator
 (define search-index-stmt #f)
 (define get-singleton-stmt #f)
 (define new-singleton-stmt #f)
+(define new-text-stmt #f)
+(define get-text-stmt #f)
+(define get-text-id-stmt #f)
+(define add-text-trans-stmt #f)
 (define log-stmt #f)
 (define logger-thread #f)
 
@@ -740,6 +750,30 @@ class-field-mutator
                                          (if is-postgres? "$3" "?")
                                          (if is-postgres? "$4" "?"))))
 
+    (set! new-text-stmt (prepare conn (format "INSERT INTO localization (lang, enc, txt) values (~a, ~a, ~a) ~a"
+                                              (if is-postgres? "$1" "?")
+                                              (if is-postgres? "$2" "?")
+                                              (if is-postgres? "$3" "?")
+                                              (if is-postgres? "RETURNING tid" ""))))
+
+    (set! get-text-id-stmt (prepare conn (format "SELECT tid from LOCALIZATION where lang=~a AND enc=~a AND txt=~a"
+                                    (if is-postgres? "$1" "?")
+                                    (if is-postgres? "$2" "?")
+                                    (if is-postgres? "$3" "?"))))
+    
+
+    (set! get-text-stmt (prepare conn (format "SELECT txt from LOCALIZATION WHERE tid=~a AND lang=~a AND enc=~a"
+                                 (if is-postgres? "$1" "?")
+                                 (if is-postgres? "$2" "?")
+                                 (if is-postgres? "$3" "?"))))
+                                              
+    (set! add-text-trans-stmt (prepare conn (format "INSERT INTO localization (tid, lang, enc, txt) values (~a, ~a, ~a, ~a)"
+                                                    (if is-postgres? "$1" "?")
+                                                    (if is-postgres? "$2" "?")
+                                                    (if is-postgres? "$3" "?")
+                                                    (if is-postgres? "$4" "?"))))
+                                       
+
     (when (thread? logger-thread)
       (kill-thread logger-thread))
 
@@ -765,7 +799,8 @@ class-field-mutator
   (if (continuation-mark-set? cms)
       (let ([out (open-output-string)])
         (for ([context (in-list (continuation-mark-set->context cms))])
-          (displayln (format "~a : ~a" (or (car context) "???") (if (srcloc? (cdr context)) (srcloc->string (cdr context)) "No source information available")) out))
+          (displayln (format "~a : ~a" (or (car context) "???") (if (srcloc? (cdr context)) (srcloc->string (cdr context))
+                                                                    "No source information available")) out))
         (get-output-string out))
       #f))
 
@@ -837,40 +872,43 @@ database-get-cid! : Symbol Path -> Nat
   (semaphore-post db/semaphore)
   
   (if (and obj (or (false? (vector-ref obj 4))
-                   (zero? (vector-ref obj 4)))) (local [(define classinfo/v (query-row _dbc_ class-load-stmt (vector-ref obj 0)))
-                                                        (define fields (parameterize ([current-readtable void-reader]) (read (open-input-bytes (vector-ref obj 5)))))
-                                                        (define classname (string->symbol (vector-ref classinfo/v 0)))
-                                                        (define classfile (string->path (vector-ref classinfo/v 1)))
-                                                        (define classfile/resolved (build-path lib-path classfile))
-                                                        (define changes (dynamic-rerequire classfile/resolved)) ;; TODO: Mark changed mudlib source files so old instances can be refreshed
-                                                        (define class (dynamic-require classfile/resolved classname))
-                                                        (define new-object (new class [id id]))
-                                                        (define new-object/tags (get-field tags new-object))
-                                                        (define created (dbtime->moment (vector-ref obj 1)))
-                                                        (define saved (dbtime->moment (vector-ref obj 2)))
-                                                        ]
+                   (zero? (vector-ref obj 4))))
+      (local [(define classinfo/v (query-row _dbc_ class-load-stmt (vector-ref obj 0)))
+              (define fields (parameterize ([current-readtable void-reader]) (read (open-input-bytes (vector-ref obj 5)))))
+              (define classname (string->symbol (vector-ref classinfo/v 0)))
+              (define classfile (string->path (vector-ref classinfo/v 1)))
+              (define classfile/resolved (build-path lib-path classfile))
+              (define changes (dynamic-rerequire classfile/resolved)) ;; TODO: Mark changed mudlib source files
+              (define class (dynamic-require classfile/resolved classname))
+              (define new-object (new class [id id]))
+              (define new-object/tags (get-field tags new-object))
+              (define created (dbtime->moment (vector-ref obj 1)))
+              (define saved (dbtime->moment (vector-ref obj 2)))
+              ]
 
-                                                  ;;; TODO:  This should recompile the changed files, get the timestamps from the changed files, and updated all of their cid's with the timestamp
-                                                  ;;; TODO (future): Somewhere in the system is a thread that looks for instances where saved < cid.saved, and does a save -> reload to them
-                                                  ;(when (cons? changes) (eprintf "~v\n" changes))
+        ;;; TODO:  This should recompile the changed files, get the timestamps from the changed files, and
+        ;;         updated all of their cid's with the timestamp
+        ;;; TODO (future): Somewhere in the system is a thread that looks for instances where saved < cid.saved, and does a save ->
+        ;;         reload to them
+        ;; (when (cons? changes) (eprintf "~v\n" changes))
  
-                                                  (hash-union! indexed-fields fields)
-                                                  (send new-object load indexed-fields)
-                                                  (set-field! created new-object created)
-                                                  (set-field! saved new-object saved)
-                                                  (for ([row (in-list tags)])
-                                                    (local [(define category (vector-ref row 0))
-                                                            (define tag      (string->symbol (vector-ref row 1)))]
-                                                      (if (hash-has-key? new-object/tags category)
-                                                          (set-add! (hash-ref new-object/tags category) tag)
-                                                          (hash-set! new-object/tags category (mutable-seteq tag)))))
+        (hash-union! indexed-fields fields)
+        (send new-object load indexed-fields)
+        (set-field! created new-object created)
+        (set-field! saved new-object saved)
+        (for ([row (in-list tags)])
+          (local [(define category (vector-ref row 0))
+                  (define tag      (string->symbol (vector-ref row 1)))]
+            (if (hash-has-key? new-object/tags category)
+                (set-add! (hash-ref new-object/tags category) tag)
+                (hash-set! new-object/tags category (mutable-seteq tag)))))
                 
-                                                  (send new-object on-load)
-                                                  (semaphore-wait object-table/semaphore)
-                                                  (hash-set! object-table id (make-weak-box new-object))
-                                                  (semaphore-post object-table/semaphore)
-                                                  new-object)
-                                                #f))
+        (send new-object on-load)
+        (semaphore-wait object-table/semaphore)
+        (hash-set! object-table id (make-weak-box new-object))
+        (semaphore-post object-table/semaphore)
+        new-object)
+      #f))
   
 
 (define (save-object oref)
@@ -1050,7 +1088,41 @@ database-get-cid! : Symbol Path -> Nat
   (hash-set! object-table (get-field id o) (make-weak-box o))
   (semaphore-post object-table/semaphore)
   (oref o))
-                
+
+#|||||||||||||||||||||||||||||||||||||||||||
+
+  Localization
+
+|||||||||||||||||||||||||||||||||||||||||||#
+
+(struct text (id default) #:transparent)
+
+(define (make-text txt  [lang 'eng] [enc 'ASCII])
+  (if (database-connected?)
+      (let ([result (query-maybe-value _dbc_ get-text-id-stmt (string-foldcase (symbol->string lang)) (symbol->mib enc) txt)])
+        (text (if result result (make-new-text txt lang enc)) txt))
+      (text #f txt)))
+  
+(define (make-new-text txt lang enc)
+  (define result (query _dbc_ new-text-stmt (string-foldcase (symbol->string lang)) (symbol->mib enc) txt))
+  (text (cond [(and (simple-result? result) (assoc 'insert-id (simple-result-info result)))
+               (cdr (assoc 'insert-it (simple-result-info result)))]
+              [(and (rows-result? result)
+                    (= 1 (length (rows-result-headers result)))
+                    (= 1 (length (rows-result-rows result))))
+               (vector-ref (first (rows-result-rows result)) 0)]) txt))
+
+(define (text->string t lang enc)
+  (if (and (database-connected?) (text-id t))
+      (or (and (symbol->mib enc) (query-maybe-value _dbc_ get-text-stmt (text-id t) (string-foldcase (symbol->string lang)) (symbol->mib enc)))
+          (query-maybe-value _dbc_ get-text-stmt (text-id t) (string-foldcase (symbol->string lang)) (symbol->mib 'UTF-8))
+          (query-maybe-value _dbc_ get-text-stmt (text-id t) (string-foldcase (symbol->string lang)) (symbol->mib 'ASCII))
+          (text-default t))
+      (text-default t)))
+
+(define (add-text-translation t lang enc txt)
+  (when (and (database-connected?) (text-id t))
+    (query-exec add-text-trans-stmt (text-id t) (string-foldcase (symbol->string lang)) (symbol->mib enc) txt)))
 
 #||||||||||||||||||||||||||||||||||||||||||||
 

@@ -81,7 +81,7 @@ Main Loop
 (define (event-handler)
   (define event (sync scheduler))
   (with-handlers ([exn:break? void]
-                  [(λ (e) #t) (λ (e) ((error-display-handler) "event exception:" e))])
+                  [(λ (e) #t) (λ (e) ((error-display-handler) (string-append "event exception - " (exn-message e))  exn e))])
     (when event (event)))
   (event-handler))
 

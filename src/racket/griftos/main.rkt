@@ -23,6 +23,7 @@
          "pq.rkt"
          "scheduler.rkt"
          "logger.rkt"
+         "charset.rkt"
          )
 
 (provide
@@ -55,6 +56,7 @@
  (all-from-out "pq.rkt")
  (all-from-out "scheduler.rkt")
  (all-from-out "logger.rkt")
+ (all-from-out "charset.rkt")
    
  (except-out (all-from-out "objects.rkt") 
              send/griftos
