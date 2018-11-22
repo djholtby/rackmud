@@ -14,9 +14,10 @@
          racket/string
          racket/file
          racket/logging
+         racket/hash
          json
          "master.rkt"
-         "objects.rkt"
+         "objects.rkt" (for-syntax "objects.rkt")
          "telnet.rkt"
          "msdp.rkt"
          "syncq.rkt"
@@ -45,6 +46,7 @@
                racket/string
                racket/file
                racket/logging
+               racket/hash
                json)
    
    
@@ -85,4 +87,22 @@
 (define (set-griftos-version-string! s)
   (set! griftos-version-string s))
 
+
 (module reader syntax/module-reader griftos)
+  
+
+
+#|
+(module+ reader 
+  (provide (rename-out [griftos:read read]
+                       [griftos:read-syntax read-syntax]))
+
+  (define (griftos:read [in (current-input-port)])
+    (parameterize ([current-readtable void-reader])
+      (read in)))
+
+  (define (griftos:read-syntax [src (object-name (current-input-port))] [in (current-input-port)])
+    (parameterize ([current-readtable void-reader])
+      (read-syntax src in))))
+  
+|#

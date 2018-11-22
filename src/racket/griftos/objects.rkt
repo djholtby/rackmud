@@ -11,7 +11,7 @@
 (require "charset.rkt")
 
 (provide saved-object% define-saved-class* define-saved-class 
-         mixin/saved define-saved-class/mixin)
+         mixin/saved define-saved-class/mixin void-reader)
 
 (provide temp-object%)
 
@@ -23,10 +23,6 @@
 (provide cid->paths path->cids)
 (provide lib-path  path-begins-with? filepath relative-module-path set-lib-path!)
 (provide log-level? database-log)
-
-(provide text text? make-text text->string add-text-translation)
-
-
 
 (define class-dep-sema (make-semaphore 1))
 (define cid->paths (make-hasheqv))
@@ -88,30 +84,11 @@
             (lazy-ref (or (string->number (list->string (reverse acc)))
                           (error 'read "unreadable value encountered: #{~a}" (list->string (reverse acc)))) #f))
         (loop (cons next-char acc)))))
-  
 
 
-;; TODO?
-(define (read-inline-struct ignore port . args)
-  (define lst (read port))
-  (cond [(list? lst)
-         (define cid (car lst))
-         (define fields (cdr lst))
-         (define classinfo/v (query-row _dbc_ class-load-stmt cid))
-         (define classname (string->symbol (vector-ref classinfo/v 0)))
-         (define classfile (string->path (vector-ref classinfo/v 1)))
-         (define classfile/resolved (build-path lib-path classfile))
-         (define changes (dynamic-rerequire classfile/resolved))
-         (define struct-maker (dynamic-require classfile/resolved classname))
-         (apply struct-maker fields)]
-        [else #f]))
-
-(define void-reader (make-readtable #f
+(define void-reader (make-readtable (current-readtable)
                                     #\< 'dispatch-macro read-unreadable
-                                    #\{ 'dispatch-macro read-object
-                                    #\@ 'dispatch-macro read-inline-struct))
-
-
+                                    #\{ 'dispatch-macro read-object))
 
 (define lib-path #f)
 
@@ -656,10 +633,6 @@ class-field-mutator
 (define search-index-stmt #f)
 (define get-singleton-stmt #f)
 (define new-singleton-stmt #f)
-(define new-text-stmt #f)
-(define get-text-stmt #f)
-(define get-text-id-stmt #f)
-(define add-text-trans-stmt #f)
 (define log-stmt #f)
 (define logger-thread #f)
 
@@ -750,30 +723,6 @@ class-field-mutator
                                          (if is-postgres? "$3" "?")
                                          (if is-postgres? "$4" "?"))))
 
-    (set! new-text-stmt (prepare conn (format "INSERT INTO localization (lang, enc, txt) values (~a, ~a, ~a) ~a"
-                                              (if is-postgres? "$1" "?")
-                                              (if is-postgres? "$2" "?")
-                                              (if is-postgres? "$3" "?")
-                                              (if is-postgres? "RETURNING tid" ""))))
-
-    (set! get-text-id-stmt (prepare conn (format "SELECT tid from LOCALIZATION where lang=~a AND enc=~a AND txt=~a"
-                                    (if is-postgres? "$1" "?")
-                                    (if is-postgres? "$2" "?")
-                                    (if is-postgres? "$3" "?"))))
-    
-
-    (set! get-text-stmt (prepare conn (format "SELECT txt from LOCALIZATION WHERE tid=~a AND lang=~a AND enc=~a"
-                                 (if is-postgres? "$1" "?")
-                                 (if is-postgres? "$2" "?")
-                                 (if is-postgres? "$3" "?"))))
-                                              
-    (set! add-text-trans-stmt (prepare conn (format "INSERT INTO localization (tid, lang, enc, txt) values (~a, ~a, ~a, ~a)"
-                                                    (if is-postgres? "$1" "?")
-                                                    (if is-postgres? "$2" "?")
-                                                    (if is-postgres? "$3" "?")
-                                                    (if is-postgres? "$4" "?"))))
-                                       
-
     (when (thread? logger-thread)
       (kill-thread logger-thread))
 
@@ -790,19 +739,26 @@ class-field-mutator
   (or (index-of '(none fatal error warning info debug) ll eq?) 0))
 
 (define griftos-logger (make-logger #f (current-logger) 'info #f))
-                                    
+(define griftos-log-rec (make-log-receiver (current-logger) 'warning #f 'debug 'griftos))
 (current-logger griftos-logger)
-                           
-(define griftos-log-rec (make-log-receiver griftos-logger 'warning #f 'debug 'griftos))
-                           
+
+(error-display-handler
+ (let ([edh (error-display-handler)])
+   (λ (str maybe-exn)
+     (when (database-connected?)
+       (database-log 'error "racket" str (backtrace maybe-exn)))
+     (edh str maybe-exn))))
+
 (define (backtrace cms)
-  (if (continuation-mark-set? cms)
-      (let ([out (open-output-string)])
-        (for ([context (in-list (continuation-mark-set->context cms))])
-          (displayln (format "~a : ~a" (or (car context) "???") (if (srcloc? (cdr context)) (srcloc->string (cdr context))
-                                                                    "No source information available")) out))
-        (get-output-string out))
-      #f))
+  (cond [(continuation-mark-set? cms)
+         (let ([out (open-output-string)])
+           (for ([context (in-list (continuation-mark-set->context cms))])
+             (displayln (format "~a : ~a" (or (car context) "???") (if (srcloc? (cdr context)) (srcloc->string (cdr context))
+                                                                       "No source information available")) out))
+           (get-output-string out))]
+        [(exn? cms)
+         (backtrace (exn-continuation-marks cms))]
+        [else #f]))
 
 (define (database-log level module code description)
   ;(-> log-level/c (or/c string? false/c) (or/c exact-nonnegative-integer? false/c) string? void?)
@@ -1094,37 +1050,63 @@ database-get-cid! : Symbol Path -> Nat
   Localization
 
 |||||||||||||||||||||||||||||||||||||||||||#
+#|
 
-(struct text (id default) #:transparent)
+(define (text-print txt port mode)
+  (case mode
+    ; write mode or print mode
+    [(#t) (write-string (format "#@(~a ~v ~v)" (text-id txt) (text-lang txt) (text-enc txt)) port)]
+    ; display mode
+    [(#f) (write-string (format "(text ~a ~v ~a ~a)" (text-id txt) (text-default txt) (text-lang txt) (text-enc txt)) port)]
+    ; print mode
+    [else  (write-string (format "#L~a:~a~v" (text-lang txt) (text-enc txt) (text-default txt)) port)]))
 
-(define (make-text txt  [lang 'eng] [enc 'ASCII])
-  (if (database-connected?)
-      (let ([result (query-maybe-value _dbc_ get-text-id-stmt (string-foldcase (symbol->string lang)) (symbol->mib enc) txt)])
-        (text (if result result (make-new-text txt lang enc)) txt))
-      (text #f txt)))
+(struct text (id [default #:mutable] lang enc) #:transparent
+  #:methods gen:custom-write
+  [(define write-proc text-print)])
+
+(define text-cache (make-hash))
+
+(define (make-text txt  [lang 'default-language] [enc 'default-encoding])
+  (define lang1 (if (symbol=? lang 'default-language) default-language lang))
+  (define enc1 (if (symbol=? enc 'default-encoding) default-encoding enc))
+  (hash-ref! text-cache (list txt lang1 enc1)
+             (λ ()
+               (if (database-connected?)
+                   (let ([result (query-maybe-value _dbc_ get-text-id-stmt (string-foldcase (symbol->string lang1)) (symbol->mib enc1) txt)])
+                     (text (if result result (make-new-text txt lang1 enc1)) txt lang1 enc1))
+                   (text #f txt lang1 enc1)))))
   
 (define (make-new-text txt lang enc)
   (define result (query _dbc_ new-text-stmt (string-foldcase (symbol->string lang)) (symbol->mib enc) txt))
   (cond [(and (simple-result? result) (assoc 'insert-id (simple-result-info result)))
-               (cdr (assoc 'insert-it (simple-result-info result)))]
-              [(and (rows-result? result)
-                    (= 1 (length (rows-result-headers result)))
-                    (= 1 (length (rows-result-rows result))))
-               (vector-ref (first (rows-result-rows result)) 0)]
-              [else #f]))
+         (cdr (assoc 'insert-it (simple-result-info result)))]
+        [(and (rows-result? result)
+              (= 1 (length (rows-result-headers result)))
+              (= 1 (length (rows-result-rows result))))
+         (vector-ref (first (rows-result-rows result)) 0)]
+        [else #f]))
 
 (define (text->string t lang enc)
-  (if (and (database-connected?) (text-id t))
-      (or (and (symbol->mib enc) (query-maybe-value _dbc_ get-text-stmt (text-id t) (string-foldcase (symbol->string lang)) (symbol->mib enc)))
-          (query-maybe-value _dbc_ get-text-stmt (text-id t) (string-foldcase (symbol->string lang)) (symbol->mib 'UTF-8))
-          (query-maybe-value _dbc_ get-text-stmt (text-id t) (string-foldcase (symbol->string lang)) (symbol->mib 'ASCII))
-          (text-default t))
-      (text-default t)))
+  (begin0
+    (cond [(and (symbol=? lang (text-lang t))
+                (symbol=? enc (text-enc t))
+                (text-default t))
+           (text-default t)]
+          [(and (database-connected?) (text-id t))
+           (or (and (symbol->mib enc) (query-maybe-value _dbc_ get-text-stmt (text-id t) (string-foldcase (symbol->string lang)) (symbol->mib enc)))
+               (query-maybe-value _dbc_ get-text-stmt (text-id t) (string-foldcase (symbol->string lang)) (symbol->mib 'UTF-8))
+               (query-maybe-value _dbc_ get-text-stmt (text-id t) (string-foldcase (symbol->string lang)) (symbol->mib 'ASCII))
+               (text-default t))]
+          [else (text-default t)])
+    (when (and (database-connected?) (text-id t) (not (text-default t)))
+      (set-text-default! t (text->string t (text-lang t) (text-enc t))))))
 
 (define (add-text-translation t lang enc txt)
   (when (and (database-connected?) (text-id t))
     (query-exec add-text-trans-stmt (text-id t) (string-foldcase (symbol->string lang)) (symbol->mib enc) txt)))
-
+|#
+  
 #||||||||||||||||||||||||||||||||||||||||||||
 
   Object Management Stuff

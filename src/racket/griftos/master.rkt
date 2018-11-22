@@ -232,11 +232,11 @@ Main Loop
     (when www-settings (start-webserver cfg))
     master-object))
 
-(define (add-user-to-griftos cptr)
+(define (add-user-to-griftos cptr ip)
   (unless master-object
     (error 'add-user-to-griftos "GriftOS has not been started!"))
   (when (lazy-ref? master-object)
-    (send/griftos master-object on-connect cptr)))
+    (send/griftos master-object on-connect cptr ip)))
   
 (define (shut-down)
   (send/griftos master-object on-shutdown)
