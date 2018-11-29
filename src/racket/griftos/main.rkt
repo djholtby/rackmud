@@ -89,20 +89,3 @@
 
 
 (module reader syntax/module-reader griftos)
-  
-
-
-#|
-(module+ reader 
-  (provide (rename-out [griftos:read read]
-                       [griftos:read-syntax read-syntax]))
-
-  (define (griftos:read [in (current-input-port)])
-    (parameterize ([current-readtable void-reader])
-      (read in)))
-
-  (define (griftos:read-syntax [src (object-name (current-input-port))] [in (current-input-port)])
-    (parameterize ([current-readtable void-reader])
-      (read-syntax src in))))
-  
-|#

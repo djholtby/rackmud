@@ -1,5 +1,5 @@
 #lang racket
-(require racket/random "phc.rkt")
+(require racket/random "phc.rkt" "pepper.rkt")
 (provide Lyra2 Lyra2/phc Lyra2/verify-phc lyra2-default-cost lyra2-default-row-count lyra2-default-col-count)
 
 
@@ -198,7 +198,6 @@
     (unpack-phc phc))
   (unless (symbol=? name 'lyra2)
     (error 'Lyra2/verify-phc (format "Attempting to verify a PHC string that states the method is ~a" name)))
-
   (define password/hash
     (Lyra2 password
            salt
@@ -211,7 +210,7 @@
     
 
 (define (Lyra2 password salt outlen [t_cost lyra2-default-cost] [R lyra2-default-row-count] [C lyra2-default-col-count])
-  (define password-bytes (string->bytes/utf-8 password))
+  (define password-bytes (bytes-append (string->bytes/utf-8 password) (get-pepper)))
   (define sponge (make-sponge))
   (define params (bytes-append
                   (integer->integer-bytes outlen 4 #f)
