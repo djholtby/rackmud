@@ -22,7 +22,8 @@
 
 (provide cid->paths path->cids)
 (provide lib-path  path-begins-with? filepath relative-module-path set-lib-path!)
-(provide log-level? database-log)
+(provide database-log)
+
 
 (define class-dep-sema (make-semaphore 1))
 (define cid->paths (make-hasheqv))
@@ -292,11 +293,12 @@ class-field-mutator
   (syntax-case stx ()
     [(_ field-id obj-expr value-expr)
      #'(begin
-         (set-field! field-id (let [(o obj-expr)]
-                                (if (lazy-ref? o) (lazy-deref o) o))
+         (let [(o obj-expr)]
+         (set-field! field-id 
+                     (if (lazy-ref? o) (lazy-deref o) o)
                      value-expr)
          (when (lazy-ref? o)
-           (send (lazy-deref o) updated)))]))
+           (send (lazy-deref o) updated))))]))
 
 ;; (define-saved-class name super-expression mud-defn-or-expr ...) defines a saved-class descended from super-expression
 ;; mud-defn-or-expr: as the regular class defn-or-expr, but with nosave varieties for all fields 
@@ -739,7 +741,7 @@ class-field-mutator
   (or (index-of '(none fatal error warning info debug) ll eq?) 0))
 
 (define griftos-logger (make-logger #f (current-logger) 'info #f))
-(define griftos-log-rec (make-log-receiver (current-logger) 'warning #f 'debug 'griftos))
+(define griftos-log-rec (make-log-receiver (current-logger) 'debug 'griftos 'debug 'gossip 'warning))
 (current-logger griftos-logger)
 
 (error-display-handler
@@ -764,7 +766,7 @@ class-field-mutator
   ;(-> log-level/c (or/c string? false/c) (or/c exact-nonnegative-integer? false/c) string? void?)
   (query-exec _dbc_ log-stmt
               (log-level->int level)
-              (if module module sql-null)
+              (if module (if (string? module) module (format "~a" module)) sql-null)
               (if code code sql-null)
               description))
               
@@ -831,12 +833,13 @@ database-get-cid! : Symbol Path -> Nat
                    (zero? (vector-ref obj 4))))
       (local [(define classinfo/v (query-row _dbc_ class-load-stmt (vector-ref obj 0)))
               (define fields (parameterize ([current-readtable void-reader]) (read (open-input-bytes (vector-ref obj 5)))))
+              (define name (vector-ref obj 3))
               (define classname (string->symbol (vector-ref classinfo/v 0)))
               (define classfile (string->path (vector-ref classinfo/v 1)))
               (define classfile/resolved (build-path lib-path classfile))
               (define changes (dynamic-rerequire classfile/resolved)) ;; TODO: Mark changed mudlib source files
               (define class (dynamic-require classfile/resolved classname))
-              (define new-object (new class [id id]))
+              (define new-object (new class [id id] [name name]))
               (define new-object/tags (get-field tags new-object))
               (define created (dbtime->moment (vector-ref obj 1)))
               (define saved (dbtime->moment (vector-ref obj 2)))
