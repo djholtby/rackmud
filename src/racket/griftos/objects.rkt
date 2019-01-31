@@ -15,7 +15,7 @@
 
 (provide temp-object%)
 
-(provide object-table object-table/semaphore saved-object=? lazy-ref lazy-ref?  get-object oref save-object get-singleton new/griftos
+(provide object-table object-table/semaphore saved-object=? lazy-ref lazy-ref? touch! get-object oref save-object get-singleton new/griftos
          instantiate/griftos make-object/griftos send/griftos get-field/griftos set-field!/griftos is-a?/griftos is-a?/c/griftos)
 
 (provide database-setup database-disconnect database-find-indexed)
@@ -591,8 +591,14 @@ class-field-mutator
             #f))
     (semaphore-post object-table/semaphore)))
 
-;; (lazy-deref) produces the object pointed to by lazy-ref (from the object table if possible, the database otherwise)
-;;  produces #f if the object cannot be found in the otable or the database (i.e. the object has been deleted)
+
+;; (touch! lr) ensures that lr points to a loaded object (loading from the database if needed)
+
+(define (touch! lr)
+    (void (lazy-deref lr)))
+
+;; (lazy-deref lr) produces the object pointed to by lr (from the object table if possible, the database otherwise)
+;;  produces #f if the object cannot be found in the o-table or the database (i.e. the object has been deleted)
 ;;  If the object was found, updates its last-access field to the current time
 ;; lazy-deref: Lazy-Ref -> (U (Instance Mud-Object%) #f)
 
