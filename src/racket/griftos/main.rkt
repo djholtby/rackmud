@@ -29,7 +29,7 @@
 
 (provide
  (for-syntax (all-from-out racket/base))
-
+ 
  
  (except-out (all-from-out racket/class)
              send get-field set-field! new instantiate make-object is-a? is-a?/c
@@ -59,7 +59,7 @@
  (all-from-out "scheduler.rkt")
  (all-from-out "logger.rkt")
  (all-from-out "charset.rkt")
-   
+  
  (except-out (all-from-out "objects.rkt") 
              send/griftos
              get-field/griftos

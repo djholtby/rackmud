@@ -230,6 +230,7 @@ Main Loop
       (raise-argument-error 'start-up "(subclass?/c saved-object%)" master-class))
     (set! master-object  (get-singleton the-master%))
     (when www-settings (start-webserver cfg))
+    (scheduler-start! scheduler)
     master-object))
 
 (define (add-user-to-griftos cptr ip)
@@ -241,6 +242,7 @@ Main Loop
 (define (shut-down)
   (send/griftos master-object on-shutdown)
   (set! master-object 'shutting-down)
+  (scheduler-stop! scheduler)
   (when webserver
     (webserver-stop))
   (for-each kill-thread thread-pool)
