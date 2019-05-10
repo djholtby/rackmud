@@ -104,6 +104,8 @@
   (variable-reference->module-path-index (#%variable-reference)))
 
 (define (relative-module-path mod-path)
+  (unless lib-path
+    (error 'define-saved-class "lib-path not set when evaluating ~a" mod-path))
   (let ([mpath (resolved-module-path-name mod-path)])
     (cond [(path? mpath) (find-relative-path lib-path mpath)]
           [(cons? mpath)  (cons (find-relative-path lib-path (car mpath)) (cdr mpath))])))
@@ -740,7 +742,7 @@ class-field-mutator
              (let loop ()
                (match (sync griftos-log-rec)
                  [(vector level msg data topic)
-                  (database-log level (or topic "racket") msg (backtrace data))])
+                  (when (string? msg) (database-log level (or topic "racket") msg (backtrace data)))])
                (loop)))))))
 
 (define (log-level->int ll)

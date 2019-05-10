@@ -1,5 +1,5 @@
 #lang racket/base
-(require  racket/list racket/set)
+(require  racket/list racket/set racket/bool)
 (provide pinkfishx)
 
 (define pinkfish-table
@@ -291,30 +291,25 @@
      ;;; etc
 (define (x256->ansi-color i bg?)
   ((if bg? cdr car) (vector-ref xterm->ansi/table (string->number i))))
-         
-  
-  
-(define (string->ansi-code s options)
+
+(define (string->ansi-code s mode)
   (define pinkfish-code (hash-ref pinkfish-table (string->symbol (string-upcase s)) (λ () #f)))
   (define xterm-code (regexp-match #px"(B\\_)?XTERM;(\\d+)" s))
-  (cond [pinkfish-code (and (set-member?  options 'color) pinkfish-code)]
-        [(and xterm-code (set-member? options '256-color))
+  (cond [pinkfish-code (and mode pinkfish-code)]
+        [(and xterm-code mode (symbol=? mode '256-color))
          (string-append (if (second xterm-code) "48;" "38;")
                         "5;"
                         (third xterm-code))]
-        [(and xterm-code (set-member?  options 'color))
+        [(and xterm-code mode (symbol=? mode 'color))
          (x256->ansi-color (third xterm-code) (second xterm-code))]
         [else #f]))
 
-        
-  
-  
 (define pinkfish-regexp
   #px"%\\^([^\\^%]*)%\\^")
 
-(define (pinkfishx s options)
+(define (pinkfishx s mode)
   (regexp-replace* pinkfish-regexp s
                    (λ (all one)
-                     (let ([code (string->ansi-code one options)])
+                     (let ([code (string->ansi-code one mode)])
                        (if code  (format "\e[~am" code) "")))))
 

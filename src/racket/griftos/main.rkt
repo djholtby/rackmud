@@ -18,6 +18,7 @@
          json
          "master.rkt"
          "objects.rkt" (for-syntax "objects.rkt")
+         "connection.rkt"
          "telnet.rkt"
          "msdp.rkt"
          "syncq.rkt"
@@ -53,6 +54,7 @@
    
  (all-from-out "msdp.rkt")
  (all-from-out "telnet.rkt")
+ (all-from-out "connection.rkt")
  (all-from-out "master.rkt")
  (all-from-out "syncq.rkt")
  (all-from-out "pq.rkt")

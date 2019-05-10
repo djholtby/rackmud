@@ -1,13 +1,13 @@
 #lang racket/base
 
-(require racket/class racket/list (for-syntax racket/base) racket/async-channel)
+(require racket/class racket/list racket/contract (for-syntax racket/base) racket/async-channel (only-in ffi/unsafe cpointer?))
 
 (require web-server/websocket/server)
 
 
 (require json)
 (require "objects.rkt")
-(require "telnet.rkt")
+(require "connection.rkt")
 (require "scheduler.rkt")
 (require racket/rerequire)
 (provide master-object master<%> server-settings start-up shut-down)
@@ -63,8 +63,8 @@ The connection manager will send a telnet-object to it whenever a user connects.
 (define master<%>
   (interface ()
     ;; on-connect (CPointer user_info_t) -> Telnet
-    on-connect
-    on-shutdown
+    [on-connect (->m cpointer? any/c (is-a?/c conn<%>))]
+    [on-shutdown (->m void?)]
     get-servlet-handler
     get-websocket-mapper
     ))

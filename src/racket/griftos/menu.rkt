@@ -1,6 +1,6 @@
 #lang racket/base
 
-(require (for-syntax racket/base) racket/class racket/contract racket/bool racket/list racket/stxparam "objects.rkt" "telnet.rkt")
+(require (for-syntax racket/base) racket/class racket/contract racket/bool racket/list racket/stxparam "objects.rkt" "connection.rkt")
 
 (provide vars (rename-out [transmit/param transmit] [set-state!/param set-state!] ) msg make-menu menu% new-telnet-menu)
 
@@ -24,6 +24,8 @@
     (field [vars-field vars])
           
     (abstract enter delta)
+
+    (define/public (connected?) #t)
     
     (define/public (transmit . messages)
       (apply transmit-func messages))
@@ -40,7 +42,7 @@
         (define epsilon-state (enter))
         (when (and allow-epsilon? (symbol? epsilon-state))
           (set-state! epsilon-state #:allow-epsilon? #f))))))
-
+#|
 (define (make-telnet-transmitter tn)
   (define (transmit . messages)
     (for ([message (in-list messages)])
@@ -50,68 +52,70 @@
             (set-telnet-user-data! tn new-menu))
           (telnet-send tn message))))
   transmit)
+|#
 
-(define (new-telnet-menu menu-class% tn [vars (make-hasheq)] [state #f])
+(define (new-telnet-menu menu-class% tn [vars (make-hasheq)])
   (define new-vars (hash-copy vars))
-  (hash-set! new-vars 'telnet tn)
-  (new menu-class%
-       [transmit-func (make-telnet-transmitter tn)]
-       [state state]))
+  (hash-set! new-vars 'terminal tn)
+  (define new-menu
+    (new menu-class%
+         [transmit-func (λ messages (send tn transmit . messages))]
+         [vars new-vars]))
+  new-menu)
 
-(define-syntax (make-menu stx)
-  (syntax-case stx ()
-    [(_ initial-state state-clause ...)
-     (let ([enter-body-code '()]
-           [delta-body-code '()])
-       (for ([ccstx (in-list (syntax->list #'(state-clause ...)))])
-         (syntax-case ccstx ()
-           ([state enter-body delta-body]
-            (set! enter-body-code
-                  (cons
-                   (syntax-case #'enter-body ()
-                     ([expr ...]
-                      (syntax/loc #'enter-body
-                        [(state) expr ...])))
-                   enter-body-code))
-            (set! delta-body-code
-                  (cons
-                   (syntax-case #'delta-body ()
-                     ([expr ...]
-                      (syntax/loc #'delta-body
-                        [(state) expr ...])))
-                   delta-body-code)))))
-       (with-syntax ([(enter-body ...) enter-body-code]
-                     [(delta-body ...) delta-body-code]
-                     [.../2 (quote-syntax ...)]) ; lol nested templates are funny
-         #`(class menu%
-             (super-new)
-             (inherit-field state vars-field)
-             (inherit transmit set-state!)
-             (unless state (send this set-state! 'initial-state))
-             (define/override (enter)
-               (define vars/param vars-field)
-               (syntax-parameterize
-                   ([vars (syntax-id-rules () [_ vars/param])]
-                    [transmit/param (syntax-rules ()
-                                      [(transmit/param a .../2)
-                                       (transmit a .../2)])]
-                    [set-state!/param (syntax-rules ()
-                                        [(set-state!/param new-state kw .../2)
-                                         (set-state! new-state kw .../2)])])
-                 (case state
-                   enter-body ...
-                   [else #f])))
-             (define/override (delta msg/param)
-               (define vars/param vars-field)
-               (syntax-parameterize
-                   ([vars (syntax-id-rules () [_ vars/param])]
-                    [transmit/param (syntax-rules ()
-                                      [(transmit/param a .../2)
-                                       (transmit a .../2)])]
-                    [set-state!/param (syntax-rules ()
-                                        [(set-state!/param new-state kw .../2)
-                                         (set-state! new-state kw .../2)])]
-                    [msg (syntax-id-rules () [_ msg/param])])
-                 (case state
-                   delta-body ...
-                   [else #f]))))))]))
+  (define-syntax (make-menu stx)
+    (syntax-case stx ()
+      [(_ state-clause ...)
+       (let ([enter-body-code '()]
+             [delta-body-code '()])
+         (for ([ccstx (in-list (syntax->list #'(state-clause ...)))])
+           (syntax-case ccstx ()
+             ([state enter-body delta-body]
+              (set! enter-body-code
+                    (cons
+                     (syntax-case #'enter-body ()
+                       ([expr ...]
+                        (syntax/loc #'enter-body
+                          [(state) expr ...])))
+                     enter-body-code))
+              (set! delta-body-code
+                    (cons
+                     (syntax-case #'delta-body ()
+                       ([expr ...]
+                        (syntax/loc #'delta-body
+                          [(state) expr ...])))
+                     delta-body-code)))))
+         (with-syntax ([(enter-body ...) enter-body-code]
+                       [(delta-body ...) delta-body-code]
+                       [.../2 (quote-syntax ...)]) ; lol nested templates are funny
+           #`(class menu%
+               (super-new)
+               (inherit-field state vars-field)
+               (inherit transmit set-state!)
+               (define/override (enter)
+                 (define vars/param vars-field)
+                 (syntax-parameterize
+                     ([vars (syntax-id-rules () [_ vars/param])]
+                      [transmit/param (syntax-rules ()
+                                        [(transmit/param a .../2)
+                                         (transmit a .../2)])]
+                      [set-state!/param (syntax-rules ()
+                                          [(set-state!/param new-state kw .../2)
+                                           (set-state! new-state kw .../2)])])
+                   (case state
+                     enter-body ...
+                     [else #f])))
+               (define/override (delta msg/param)
+                 (define vars/param vars-field)
+                 (syntax-parameterize
+                     ([vars (syntax-id-rules () [_ vars/param])]
+                      [transmit/param (syntax-rules ()
+                                        [(transmit/param a .../2)
+                                         (transmit a .../2)])]
+                      [set-state!/param (syntax-rules ()
+                                          [(set-state!/param new-state kw .../2)
+                                           (set-state! new-state kw .../2)])]
+                      [msg (syntax-id-rules () [_ msg/param])])
+                   (case state
+                     delta-body ...
+                     [else #f]))))))]))
