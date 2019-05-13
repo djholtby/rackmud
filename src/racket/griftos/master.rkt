@@ -1,6 +1,6 @@
 #lang racket/base
 
-(require racket/class racket/list racket/contract (for-syntax racket/base) racket/async-channel (only-in ffi/unsafe cpointer?))
+(require racket/class racket/list racket/contract (for-syntax racket/base) racket/async-channel)
 
 (require web-server/websocket/server)
 
@@ -10,15 +10,16 @@
 (require "connection.rkt")
 (require "scheduler.rkt")
 (require racket/rerequire)
-(provide master-object master<%> server-settings start-up shut-down)
-(provide add-user-to-griftos)
+(provide master-object master<%> start-scheduler! shut-down! load-master-object!)
+;(provide add-user-to-griftos)
 
 (provide yield! queue-event)
-(provide update-certs webserver-stop)
-(provide make-jit set-make-jit!)
+(provide update-certs start-webserver webserver-stop webserver)
+
 
 
 ;(provide ssl-settings ssl-settings? ssl-settings-private-key ssl-settings-certificate ssl-settings-port)
+#| 
 (provide db-settings  db-settings? db-settings-type db-settings-user db-settings-password db-settings-db
          db-settings-server db-settings-port db-settings-socket)
 
@@ -27,35 +28,14 @@
 
 (provide griftos-config griftos-config? griftos-config-mudlib griftos-config-master-file griftos-config-master-class
          griftos-config-encodings griftos-config-database griftos-config-www)
-
+|#
 
 
 (define master-object #f)
-(define server-settings #f)
-
-
-#|||||||||||||||||||||||||||||||
-Native Functions
-
-These are hooks that the C backend will override with C functions
-
-|||||||||||||||||||||||||||||||#
-
-;; (make-jit proc) requests that proc be compiled  to native code
-;; make-jit : Procedure -> Void
-(define make-jit void)
-
-(define (set-make-jit! proc)
-  (unless (procedure? proc)
-    (raise-argument-error 'set-make-jit! "procedure?" proc))
-  (set! make-jit proc))
-
-
 
 #|||||||||||||||||||||
 Master Interface
 
-The C backend will instantiate a singleton of this class.
 The connection manager will send a telnet-object to it whenever a user connects.
 |||||||||||||||||||||#
 
@@ -63,8 +43,9 @@ The connection manager will send a telnet-object to it whenever a user connects.
 (define master<%>
   (interface ()
     ;; on-connect (CPointer user_info_t) -> Telnet
-    [on-connect (->m cpointer? any/c (is-a?/c conn<%>))]
+    [on-connect (->m (is-a?/c terminal<%>) any/c)]
     [on-shutdown (->m void?)]
+    [get-connection-mixin (->m (-> (implementation?/c terminal<%>) (implementation?/c terminal<%>)))]
     get-servlet-handler
     get-websocket-mapper
     ))
@@ -100,7 +81,7 @@ Main Loop
     [(_ obj-expr method parameter ...)
      #'(scheduler-call-and-return! sched (λ () (send/griftos obj-expr method parameter ...)) 0)]))
 
-
+#|
 ; DB-Settings is a (db-settings (anyof 'postgres 'sqlite 'odbc 'mysql) - type
 ;                               String                                 - user
 ;                               String                                 - password
@@ -128,7 +109,7 @@ Main Loop
 
 
 (struct griftos-config (mudlib www master-file master-class encodings database threads) #:transparent)
-
+|#
 
 
 
@@ -141,7 +122,7 @@ Main Loop
   (stop-websocket-server webserver))
   
 
-
+#|
 (define (start-webserver cfg)
   (let* ([www-settings (griftos-config-www cfg)]
          [port (www-settings-port www-settings)]
@@ -179,11 +160,47 @@ Main Loop
                  (memq ssl-port bound-ports))
       (error 'start-webserver "Failed to bind to ports: ~v" bound-ports))
     (set! webserver the-server)))
-    
+|#    
                       ; TODO #:log-file griftos-log-port
                       
-                      
-                      
+(define (start-webserver mode port ssl-port static-root servlet-url servlet-handler websock-url websock-mapper certificate private-key)
+  (when (and (not (eq? mode 'https))
+             (not port))
+    (raise-argument-error 'start-webserver "listen-port-number?" port))
+  (when (and (not (eq? mode 'http))
+             (not ssl-port))
+    (raise-argument-error 'start-webserver "listen-port-number?" ssl-port))
+  (unless (lazy-ref? master-object)
+    (error 'start-webserver "master-object not found.  webserver must be started AFTER the object persistence layer"))
+  (let* ([ssl-redirect? (eq? mode 'http->https)]
+         [confirmation-channel (make-async-channel)]
+         [the-server (serve/servlet+websockets
+                      servlet-handler
+                      websock-mapper
+
+                      #:confirmation-channel confirmation-channel
+                      #:http-port port
+                      #:ssl-port ssl-port
+                      #:http? (not (eq? mode 'https))
+                      #:ssl? (not (eq? mode 'http))
+                      #:listen-ip #f ; TODO give config control of this
+                      #:force-ssl? ssl-redirect?
+                      #:ssl-cert certificate
+                      #:ssl-key private-key
+                      #:server-root-path static-root
+                      #:servlet-path servlet-url
+                      #:servlet-regexp (regexp (format "^~a$|^~a/" servlet-url servlet-url))
+                      #:websocket-path websock-url
+                      #:websocket-regexp (regexp (format "^~a$|^~a/" websock-url websock-url)))]
+         [bound-ports (if (and port ssl-port)
+                          (list (async-channel-get confirmation-channel)
+                                (async-channel-get confirmation-channel)
+                                #f)
+                          (list (async-channel-get confirmation-channel) #f))])
+    (unless (and (memq port bound-ports)
+                 (memq ssl-port bound-ports))
+      (error 'start-webserver "Failed to bind to ports: ~v" bound-ports))
+    (set! webserver the-server)))
     
     
     
@@ -203,9 +220,20 @@ Main Loop
 
 
 
+(define (start-scheduler! thread-count)
+  (set! thread-pool (map (λ (i) (thread event-handler)) (range thread-count)))
+  (scheduler-start! scheduler))
 
-
-(define (start-up cfg)
+(define (load-master-object! mudlib master-file master-class)
+  (dynamic-rerequire (build-path mudlib master-file))
+  (define % (dynamic-require (build-path mudlib master-file) master-class))
+  (unless (implementation? % master<%>)
+    (raise-argument-error 'load-master-object! "(implementation?/c master<%>" %))
+  (unless (subclass? % saved-object%)
+    (raise-argument-error 'load-master-object! "(subclass?/c saved-object%" %))
+  (set! master-object (get-singleton %)))
+#|
+(define (start-up! cfg)
   (let ([mudlib (griftos-config-mudlib cfg)]
         [www-settings (griftos-config-www cfg)]
         [master-file (griftos-config-master-file cfg)]
@@ -232,20 +260,22 @@ Main Loop
     (when www-settings (start-webserver cfg))
     (scheduler-start! scheduler)
     master-object))
+|#
 
-(define (add-user-to-griftos cptr ip)
-  (unless master-object
-    (error 'add-user-to-griftos "GriftOS has not been started!"))
-  (when (lazy-ref? master-object)
-    (send/griftos master-object on-connect cptr ip)))
+;(define (add-user-to-griftos cptr ip)
+;  (unless master-object
+;    (error 'add-user-to-griftos "GriftOS has not been started!"))
+;  (when (lazy-ref? master-object)
+;    (send/griftos master-object on-connect cptr ip)))
   
-(define (shut-down)
+(define (shut-down!)
   (send/griftos master-object on-shutdown)
   (set! master-object 'shutting-down)
   (scheduler-stop! scheduler)
   (when webserver
     (webserver-stop))
   (for-each kill-thread thread-pool)
+  (set! thread-pool #f)
   (semaphore-wait object-table/semaphore)
   (hash-for-each object-table
                  (λ (oid obj)

@@ -78,8 +78,7 @@
 
 (define (scheduler-start! sched)
   (define thunk (make-scheduler-thunk sched))
-  (set-event-scheduler-thread! sched (thread thunk))
-  thunk)
+  (set-event-scheduler-thread! sched (thread thunk)))
 
 (define (scheduler-stop! sched)
   (when (event-scheduler-thread sched)

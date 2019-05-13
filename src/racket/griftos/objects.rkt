@@ -16,7 +16,7 @@
 (provide temp-object%)
 
 (provide object-table object-table/semaphore saved-object=? lazy-ref lazy-ref? touch! get-object oref save-object get-singleton new/griftos
-         instantiate/griftos make-object/griftos send/griftos get-field/griftos set-field!/griftos is-a?/griftos is-a?/c/griftos)
+         instantiate/griftos make-object/griftos send/griftos send*/griftos get-field/griftos set-field!/griftos is-a?/griftos is-a?/c/griftos)
 
 (provide database-setup database-disconnect database-find-indexed)
 
@@ -266,9 +266,18 @@
 (define-syntax (send/griftos stx)
   (syntax-case stx ()
     [(_ obj-expr method-id arg ...)
-     #'(send (let [(o obj-expr)]
+     (syntax/loc stx
+       (send (let [(o obj-expr)]
                (if (lazy-ref? o) (lazy-deref o) o))
-             method-id arg ...)]))
+             method-id arg ...))]))
+
+(define-syntax (send*/griftos stx)
+  (syntax-case stx ()
+    [(_ obj-expr method-invokation ...)
+     (syntax/loc stx
+       (send* (let [(o obj-expr)]
+                (if (lazy-ref? o) (lazy-deref o) o))
+         method-invokation ...))]))
 
 #| TODO:
 
