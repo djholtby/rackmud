@@ -1,7 +1,7 @@
 #lang griftos
 
 (define t0 (current-inexact-milliseconds))
-(require racket/tcp openssl griftos/griftos-config griftos/telnet #|griftos/websock|# griftos/charset "defaults.rkt")
+(require net/rfc6455 racket/tcp openssl griftos/griftos-config griftos/telnet griftos/websock griftos/charset "defaults.rkt")
 
 (define cfg (load-griftos-settings))
 
@@ -14,7 +14,6 @@
        (hash-ref cfg 'ssl:certificate #f)
        (hash-ref cfg 'ssl:private-key #f)
        (port-number? telnet-ssl-port)))
-       telnet-ssl-port
 
 (define http-port (hash-ref cfg 'webserver:port #f))
 (define http-enabled? (and (hash-ref cfg 'webserver:http #f)
@@ -78,11 +77,23 @@
   (define custom-telnet%
     ((send master-object get-connection-mixin)
      telnet-conn%))
+
+  (define custom-websock%
+    ((send master-object get-connection-mixin)
+     websock-terminal%))
+  
   (printf "loaded in ~vms\n" (round (inexact->exact (- (current-inexact-milliseconds) t0))))
   ;(define custom-websock%
   ;  ((send master-object get-connection-mixin)
   ;   server-websock-conn%))
 
+  (define (add-websock-user ws-conn)
+    (define handshake (ws-recv ws-conn))
+    (unless (eof-object? handshake)
+      (define handshake/json (string->jsexpr handshake))
+      (define conn (new custom-websock% [websock-connection ws-conn] [secure? (hash-ref handshake/json 'ssl)] [ip (hash-ref handshake/json 'ip)]))
+      (send master-object on-connect conn)))
+  
   (define (add-telnet-user in out ip [secure? #f])
     (define conn (new custom-telnet% [in in] [out out] [ip ip] [secure? secure?]
                       [telopts '(echo compress2 gmcp naws ttype charset binary mssp)]
@@ -106,7 +117,7 @@
   (display "Starting Listeners...")
   (set! t0 (current-inexact-milliseconds))
   (define telnet-serv
-    (and telnet-enabled? (tcp-listen telnet-port 16)))
+    (and telnet-enabled? (tcp-listen telnet-port 16 #t)))
   (define telnet-thread
     (and telnet-enabled?
          (thread (lambda ()
@@ -117,7 +128,7 @@
                      (loop))))))
 
   (define ssl-serv
-    (and telnet-ssl-enabled? (tcp-listen telnet-ssl-port 16)))
+    (and telnet-ssl-enabled? (tcp-listen telnet-ssl-port 16 #t)))
   (define ssl-ctxt
     (and telnet-ssl-enabled? (ssl-make-server-context 'secure)))
   (when ssl-serv
@@ -134,7 +145,16 @@
                      (loop))))))
 
 
-
+  (define (reload-certificates!)
+    (define certificate (hash-ref cfg 'ssl:certificate #f))
+    (define private-key (hash-ref cfg 'ssl:private-key #f))
+    (when (and private-key certificate)
+      (when https-enabled?
+        (update-certs certificate private-key))
+      (when ssl-ctxt
+        (ssl-load-certificate-chain! ssl-ctxt certificate)
+        (ssl-load-private-key! ssl-ctxt private-key))))
+  
   ;; and also start the webserver (if enabled)
 
   ;(define (start-webserver mode port ssl-port static-root servlet-url websock-url certificate private-key)
@@ -148,13 +168,13 @@
      http-port
      https-port
      (hash-ref cfg 'webserver:web-path "./www")
-     (hash-ref cfg 'webserver:servlet-url "/servlet")
+     (hash-ref cfg 'webserver:servlet-url "servlet")
      (send master-object get-servlet-handler)
-     (hash-ref cfg 'webserver:websock-url "/socket")
+     (hash-ref cfg 'webserver:websock-url "socket")
      (send master-object get-websocket-mapper
-           (hash-ref cfg 'webserver:websock-url "/socket")
+           (hash-ref cfg 'webserver:websock-url "socket")
            (hash-ref cfg 'webserver:websock-client-url #f)
-           (void))
+           add-websock-user)
      (hash-ref cfg 'ssl:certificate #f)
      (hash-ref cfg 'ssl:private-key #f)))
 
@@ -168,6 +188,7 @@
     (when ssl-thread (kill-thread ssl-thread))
     (when ssl-serv (tcp-close ssl-serv))
     (when repl-thread (kill-thread repl-thread))
+    (displayln "Telnet and REPL stopped...")
     (shut-down!))
 
 
