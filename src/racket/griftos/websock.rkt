@@ -1,9 +1,10 @@
 #lang racket/base
 
-(require racket/class racket/port racket/bytes racket/list racket/match racket/string racket/set json)
-(require "connection.rkt" "defconst.rkt")
+(require racket/class racket/port racket/bytes racket/list racket/match racket/string racket/set json net/rfc6455)
+(require "connection.rkt" "defconst.rkt" "tags.rkt")
 
-#|
+(provide websock-terminal%)
+
 (define websock-terminal%
   (class* terminal% (terminal<%>)
     (super-new)
@@ -13,7 +14,8 @@
       (not (ws-conn-closed? websock-connection)))
 
     (inherit receive)
-
+    (inherit-field markup-settings)
+    
     (define terminal-dimensions '(80 . 24))
     (define/override (dimensions)
       terminal-dimensions)
@@ -56,17 +58,20 @@
         (match msg
           [(or #f (? eof-object?))
            (kill-thread connection-thread)
-           (ws-close! websock-connection)
+           (ws-close! websock-connection #:reason "Connection closed by server")
            (receive eof)]
           [(? string?) (ws-send! websock-connection (jsexpr->string `#hasheq((type . "text") (text . ,msg))))]
+          [(? bytes?) (ws-send! websock-connection (jsexpr->string `#hasheq((type . "text") (text . ,(bytes->string/utf-8 msg)))))]
           ['nop
            (ws-send! websock-connection "null")]
           [(? symbol?)
            (ws-send! websock-connection (jsexpr->string `#hasheq((type . "command") (command . ,(symbol->string msg)))))]
+          [(list 'text contents ...)
+           (ws-send! websock-connection (jsexpr->string `#hasheq((type . "markup") (text . ,(xexpr->string/settings msg markup-settings)))))]
           [(list 'gmcp package payload)
            (ws-send! websock-connection (jsexpr->string `#hasheq((type . "gmcp") (package . ,(symbol->string package)) (payload . ,payload))))]
           [(list 'gmcp package)
-           (ws-send! websock-connection (jsexpr->string `#hasheq((type . "gmcp") (package . ,(symbol->string package)) (payload . #f))))]
+           (ws-send! websock-connection (jsexpr->string `#hasheq((type . "gmcp") (package . ,(symbol->string package)) (payload . #f))))])))))
 
     
-|#
+

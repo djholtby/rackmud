@@ -54,7 +54,18 @@
 
 (struct websocket-server (shutdown ssl-context))
 
+(define (fix-url path)
+  (third (regexp-match #rx"^(/)?(.*)(/)?$" path)))
+
+
+(define (root-url-quote url-string)
+  (regexp-quote (string-append "/" (fix-url url-string))))
+
+
+
 (provide/contract
+ [fix-url (string? . -> . string?)]
+ [root-url-quote (string? . -> . string?)]
  [websocket-server? (any/c . -> . boolean?)]
  [stop-websocket-server (websocket-server? . -> . void?)]
  [renew-websocket-server-certificate (websocket-server? path-string? path-string? . -> . void?)]
@@ -109,13 +120,16 @@
     (ssl-load-private-key! cxt ssl-key)))
 
 (define (make-ssl-connect the-ctxt)
-    (define-unit ssl:dispatch-server-connect@
-      (import) (export dispatch-server-connect^)
-      (define (port->real-ports ip op)
+  (define-unit ssl:dispatch-server-connect@
+    (import) (export dispatch-server-connect^)
+    (define (port->real-ports ip op)
+      (with-handlers ([exn:fail? (λ (e)
+                                   (values ip op))])
         (ports->ssl-ports	ip op
+                                #:close-original? #t
                                 #:mode 'accept
-                                #:context the-ctxt)))
-    ssl:dispatch-server-connect@)
+                                #:context the-ctxt))))
+  ssl:dispatch-server-connect@)
 
 (define (dispatcher-sequence . dispatchers)
   (let loop ([ds dispatchers] [r '()])
@@ -196,19 +210,21 @@
          [ssl-port 8433]
          
          #:websocket-path
-         [websocket-path "/websocket"]
+         [websocket-path "/socket"]
          #:websocket-regexp
-         [websocket-regexp (regexp (format "^~a$|^~a/" (regexp-quote websocket-path) (regexp-quote websocket-path)))]
-
-         
+         [websocket-regexp (regexp (let ([quoted-url (root-url-quote websocket-path)])
+                                     (format "^/~a$|^/~a/" quoted-url quoted-url)))]
          #:log-file
          [log-file #f]
          #:log-format
          [log-format 'apache-default])
   
   (define ssl-ctxt
-    (if ssl? (ssl-make-server-context) #f))
+    (if ssl? (ssl-make-server-context 'secure) #f))
   (when ssl?
+    (ssl-set-verify! ssl-ctxt #f)
+    (ssl-try-verify! ssl-ctxt #f)
+    (ssl-set-verify-hostname! ssl-ctxt #f)
     (ssl-load-certificate-chain! ssl-ctxt ssl-cert)
     (ssl-load-private-key! ssl-ctxt ssl-key))
 
@@ -247,7 +263,8 @@
 
      ;; This doesn't work here, the extra servlets are sandboxed and cannot access the embedded bytecode
      
-     #|(let-values ([(clear-cache! url->servlet)
+     #|
+     (let-values ([(clear-cache! url->servlet)
                    (servlets:make-cached-url->servlet
                     (fsmap:filter-url->path
                      #rx"\\.(ss|scm|rkt|rktd)$"
@@ -270,69 +287,73 @@
      (lift:make (compose any->response file-not-found-responder))))
   
   (websocket-server 
-    (cond
-      [(and ssl? http? force-ssl?)
-       (let ([shutdown-http
-              (serve  #:dispatch (lift:make (λ (request)
-                                              (response 301 #"Moved Permanently" (current-seconds) TEXT/HTML-MIME-TYPE
-                                                        (list (make-header #"Location"
-                                                                           (string->bytes/utf-8 (format "https://~a:~a~a"
-                                                                                                        (request-host-ip request)
-                                                                                                        ssl-port
-                                                                                                        (url->string (request-uri request))))))
-                                                        (λ (out-port) (write-bytes #"HTTPS Required" out-port)))))
-                      #:confirmation-channel confirmation-channel
-                      #:connection-close? connection-close?
-                      #:listen-ip listen-ip
-                      #:port http-port)]
-             [shutdown-https
-              (serve
-               #:dispatch dispatcher
-               #:confirmation-channel confirmation-channel
-               #:connection-close? connection-close?
-               #:listen-ip listen-ip
-               #:port ssl-port
-               #:max-waiting max-waiting
-               #:dispatch-server-connect@  (make-ssl-connect ssl-ctxt))])
-         (λ ()
-           (shutdown-http)
-           (shutdown-https)))]
-      [(and ssl? http?)
-       (let ([shutdown-http
-              (serve
-               #:dispatch dispatcher
-               #:confirmation-channel confirmation-channel
-               #:connection-close? connection-close?
-               #:listen-ip listen-ip
-               #:port http-port
-               #:max-waiting max-waiting)]
-             [shutdown-https
-              (serve
-               #:dispatch dispatcher
-               #:confirmation-channel confirmation-channel
-               #:connection-close? connection-close?
-               #:listen-ip listen-ip
-               #:port ssl-port
-               #:max-waiting max-waiting
-               #:dispatch-server-connect@  (make-ssl-connect ssl-ctxt))])
-         (λ ()
-           (shutdown-http)
-           (shutdown-https)))]
-      [ssl?
-       (serve
-        #:dispatch dispatcher
-        #:confirmation-channel confirmation-channel
-        #:connection-close? connection-close?
-        #:listen-ip listen-ip
-        #:port ssl-port
-        #:max-waiting max-waiting
-        #:dispatch-server-connect@  (make-ssl-connect ssl-ctxt))]
-      [else 
-       (serve
-        #:dispatch dispatcher
-        #:confirmation-channel confirmation-channel
-        #:connection-close? connection-close?
-        #:listen-ip listen-ip
-        #:port http-port
-        #:max-waiting max-waiting)]) ssl-ctxt))
+   (cond
+     [(and ssl? http? force-ssl?)
+      (let ([shutdown-http
+             (serve  #:dispatch (lift:make (λ (request)
+                                             (response 301 #"Moved Permanently" (current-seconds) TEXT/HTML-MIME-TYPE
+                                                       (list (make-header #"Location"
+                                                                          (string->bytes/utf-8 (format "https://~a:~a~a"
+                                                                                                       (request-host-ip request)
+                                                                                                       ssl-port
+                                                                                                       (url->string (request-uri request))))))
+                                                       (λ (out-port) (write-bytes #"HTTPS Required" out-port)))))
+                     #:confirmation-channel confirmation-channel
+                     #:connection-close? connection-close?
+                     #:listen-ip listen-ip
+                     #:port http-port)]
+            [shutdown-https
+             (serve
+              #:dispatch dispatcher
+              #:confirmation-channel confirmation-channel
+              #:connection-close? connection-close?
+              #:listen-ip listen-ip
+              #:port ssl-port
+              #:max-waiting max-waiting
+              #:dispatch-server-connect@  (make-ssl-connect ssl-ctxt))])
+        (λ ()
+          (with-handlers ([exn? void])
+            (shutdown-http))
+          (with-handlers ([exn? void])
+            (shutdown-https))))]
+     [(and ssl? http?)
+      (let ([shutdown-http
+             (serve
+              #:dispatch dispatcher
+              #:confirmation-channel confirmation-channel
+              #:connection-close? connection-close?
+              #:listen-ip listen-ip
+              #:port http-port
+              #:max-waiting max-waiting)]
+            [shutdown-https
+             (serve
+              #:dispatch dispatcher
+              #:confirmation-channel confirmation-channel
+              #:connection-close? connection-close?
+              #:listen-ip listen-ip
+              #:port ssl-port
+              #:max-waiting max-waiting
+              #:dispatch-server-connect@  (make-ssl-connect ssl-ctxt))])
+        (λ ()
+          (with-handlers ([exn? void])
+            (shutdown-http))
+          (with-handlers ([exn? void])
+            (shutdown-https))))]
+     [ssl?
+      (serve
+       #:dispatch dispatcher
+       #:confirmation-channel confirmation-channel
+       #:connection-close? connection-close?
+       #:listen-ip listen-ip
+       #:port ssl-port
+       #:max-waiting max-waiting
+       #:dispatch-server-connect@  (make-ssl-connect ssl-ctxt))]
+     [else 
+      (serve
+       #:dispatch dispatcher
+       #:confirmation-channel confirmation-channel
+       #:connection-close? connection-close?
+       #:listen-ip listen-ip
+       #:port http-port
+       #:max-waiting max-waiting)]) ssl-ctxt))
   

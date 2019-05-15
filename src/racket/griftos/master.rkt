@@ -189,9 +189,11 @@ Main Loop
                       #:ssl-key private-key
                       #:server-root-path static-root
                       #:servlet-path servlet-url
-                      #:servlet-regexp (regexp (format "^~a$|^~a/" servlet-url servlet-url))
+                      #:servlet-regexp (regexp (let ([quoted-url (root-url-quote servlet-url)])
+                                                 (format "^~a$|^~a/" quoted-url quoted-url)))
                       #:websocket-path websock-url
-                      #:websocket-regexp (regexp (format "^~a$|^~a/" websock-url websock-url)))]
+                      #:websocket-regexp (regexp (let ([quoted-url (root-url-quote websock-url)])
+                                                 (format "^~a$|^~a/" quoted-url quoted-url))))]
          [bound-ports (if (and port ssl-port)
                           (list (async-channel-get confirmation-channel)
                                 (async-channel-get confirmation-channel)
@@ -269,11 +271,15 @@ Main Loop
 ;    (send/griftos master-object on-connect cptr ip)))
   
 (define (shut-down!)
+  (displayln "Shutdown!")
   (send/griftos master-object on-shutdown)
+  (displayln "Shut down master object")
   (set! master-object 'shutting-down)
   (scheduler-stop! scheduler)
+  (displayln "Stopped scheduler")
   (when webserver
     (webserver-stop))
+  (displayln "Stopped webserver")
   (for-each kill-thread thread-pool)
   (set! thread-pool #f)
   (semaphore-wait object-table/semaphore)
@@ -282,7 +288,9 @@ Main Loop
                    (let ([o (weak-box-value obj)])
                      (when o (save-object o)))))
   (semaphore-post object-table/semaphore)
-  (database-disconnect))
+  (displayln "Saved cached objects")
+  (database-disconnect)
+  (displayln "Closed database connection"))
   
 
 #|

@@ -10,6 +10,8 @@
   (lexer
    [(eof) 'EOF]
    [(re:or whitespace) (cfgl input-port)]
+   [(re:or "true" "false")
+    (token-BOOL lexeme)]
    [(re:: #\"
           (re:*
            (re:or
@@ -21,8 +23,7 @@
           (re:*
            (re:or alphabetic numeric #\_ #\-)))
     (token-ID lexeme)]
-   [(re:or "true" "false")
-    (token-BOOL lexeme)]
+   
    [(re:: #\#
           (re:* (re:~ #\newline))
           #\newline)
