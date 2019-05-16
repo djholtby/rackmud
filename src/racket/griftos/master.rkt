@@ -187,6 +187,7 @@ Main Loop
                       #:force-ssl? ssl-redirect?
                       #:ssl-cert certificate
                       #:ssl-key private-key
+                      #:servlet-namespace '(griftos)
                       #:server-root-path static-root
                       #:servlet-path servlet-url
                       #:servlet-regexp (regexp (let ([quoted-url (root-url-quote servlet-url)])
