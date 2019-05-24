@@ -96,7 +96,7 @@
   
   (define (add-telnet-user in out ip [secure? #f])
     (define conn (new custom-telnet% [in in] [out out] [ip ip] [secure? secure?]
-                      [telopts '(echo compress2 gmcp naws ttype charset binary mssp)]
+                      [telopts '(echo compress2 gmcp naws ttype charset binary mssp mxp)]
                       [option-managers
                        `((,mccp2-manager%)
                          (,gmcp-manager%)
@@ -106,6 +106,7 @@
                          (,charset-manager% telnet-encodings telnet-charset-seq))]))
     ;    (eprintf "adding new user from ~v" ip)
     (send* conn
+      (enable-telopt telopt:mxp 'local)
       (enable-telopt telopt:compress2 'local)
       (enable-telopt telopt:ttype 'remote)
       (enable-telopt telopt:gmcp 'local)
