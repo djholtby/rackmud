@@ -2,7 +2,7 @@
 
 (require racket/class racket/list racket/contract (for-syntax racket/base) racket/async-channel)
 
-(require web-server/websocket/server)
+(require "websocket/server.rkt")
 
 
 (require json)
