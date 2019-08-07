@@ -759,7 +759,7 @@ class-field-mutator
   (or (index-of '(none fatal error warning info debug) ll eq?) 0))
 
 (define griftos-logger (make-logger #f (current-logger) 'info #f))
-(define griftos-log-rec (make-log-receiver (current-logger) 'debug 'griftos 'debug 'gossip 'warning))
+(define griftos-log-rec (make-log-receiver (current-logger) 'debug 'griftos 'debug 'grapevine 'warning))
 (current-logger griftos-logger)
 
 (error-display-handler
