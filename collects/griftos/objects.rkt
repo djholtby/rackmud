@@ -94,8 +94,9 @@
 (define lib-path #f)
 
 (define (set-lib-path! p)
-  (unless (path-string? p) (raise-argument-error 'set-lib-path! "path-string?" p))
-  (set! lib-path (path->directory-path (simplify-path (string->path p)))))
+  (unless (or (path? p)
+              (path-string? p)) (raise-argument-error 'set-lib-path! "(or/c path? path-string?)" p))
+  (set! lib-path (path->directory-path (simplify-path (if (path? p) p (string->path p))))))
 
 (define-syntax-rule (filepath)
   (variable-reference->resolved-module-path (#%variable-reference)))

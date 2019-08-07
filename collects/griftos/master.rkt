@@ -227,9 +227,9 @@ Main Loop
   (set! thread-pool (map (λ (i) (thread event-handler)) (range thread-count)))
   (scheduler-start! scheduler))
 
-(define (load-master-object! mudlib master-file master-class)
-  (dynamic-rerequire (build-path mudlib master-file))
-  (define % (dynamic-require (build-path mudlib master-file) master-class))
+(define (load-master-object! resolved-mudlib-path master-class)
+  (dynamic-rerequire resolved-mudlib-path)
+  (define % (dynamic-require resolved-mudlib-path master-class))
   (unless (implementation? % master<%>)
     (raise-argument-error 'load-master-object! "(implementation?/c master<%>" %))
   (unless (subclass? % saved-object%)
