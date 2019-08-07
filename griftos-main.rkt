@@ -61,17 +61,32 @@
 ;; With that taken care of, load the master object
 (display "Loading Master Object...")
 (set! t0 (current-inexact-milliseconds))
-(define mudlib (hash-ref cfg 'mudlib-path "./lib"))
-(define mudlib/path (path->directory-path (simplify-path (string->path mudlib))))
+(define mudlib (hash-ref cfg 'mudlib-path #f))
+(define mudlib/path (and mudlib (path->directory-path (simplify-path (string->path mudlib)))))
+(define mudlib-collect (hash-ref cfg 'master-collect))
+(define mudlib-module (hash-ref cfg 'master-module "main.rkt"))
 
-(set-lib-path! mudlib)
+
+;;(when mudlib (set-lib-path! mudlib))
 
 
-(parameterize ([current-library-collection-paths (cons mudlib/path (current-library-collection-paths))])
+(parameterize ([current-library-collection-paths (if mudlib/path
+                                                     (cons mudlib/path (current-library-collection-paths))
+                                                     (current-library-collection-paths))])
+
+  
+  (define resolved-collect (collection-file-path mudlib-module mudlib-collect #:fail
+                                                 (lambda (message)
+                                                   (eprintf "Error loading mudlib collect\n~a\n" message)
+                                                   (exit -1))))
+
+  (let-values ([(base-lib-path module-name _) (split-path resolved-collect)])
+    (set-lib-path! base-lib-path))
+
+  
   (start-scheduler! (hash-ref cfg 'thread-count DEFAULT-THREAD-COUNT))  
   ;(displayln (current-library-collection-paths))
-  (load-master-object! mudlib/path
-                       (hash-ref cfg 'master-module "custom-master.rkt")
+  (load-master-object! resolved-collect
                        (string->symbol (hash-ref cfg 'master-classname "custom-master%")))
   
   (define custom-telnet%
