@@ -2,7 +2,7 @@
 
 (define t0 (current-inexact-milliseconds))
 (require net/rfc6455 racket/tcp openssl griftos/griftos-config griftos/telnet griftos/websock griftos/charset "defaults.rkt")
-
+(define-namespace-anchor anc)
 (define cfg (load-griftos-settings))
 
 (define telnet-port (hash-ref cfg 'telnet:port #f))
@@ -209,15 +209,17 @@
 
 
   ;; Finally, if running in interactive mode, start the REPL thread
+
+
   (define repl-thread
     (and (hash-ref cfg 'interactive #f)
          (thread
           (lambda ()
-            (define ns (make-base-namespace))
+            (define ns (namespace-anchor->namespace anc))
             (define (shutdown!)
               (semaphore-post shutdown-semaphore))
-            (namespace-attach-module (current-namespace) 'griftos ns)
-            (namespace-require 'griftos ns)
+;            (namespace-attach-module (current-namespace) 'griftos ns)
+;            (namespace-require 'griftos ns)
             (parameterize ([current-namespace ns]
                            ;; todo - can parameterize some of the repl parameters to make a better interface
                            )
