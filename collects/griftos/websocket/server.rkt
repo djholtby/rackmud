@@ -261,7 +261,7 @@
       #:responders-servlet 
       responders-servlet)
 
-     (let-values ([(clear-cache! url->servlet)
+#|     (let-values ([(clear-cache! url->servlet)
                    (servlets:make-cached-url->servlet
                     (fsmap:filter-url->path
                      #rx"\\.(ss|scm|rkt|rktd)$"
@@ -270,7 +270,7 @@
                     (make-default-path->servlet
                      #:make-servlet-namespace 
                      (make-make-servlet-namespace #:to-be-copied-module-specs servlet-namespace)))])
-       (servlets:make url->servlet))
+       (servlets:make url->servlet))|#
      (map (lambda (extra-files-path)
             (files:make
              #:url->path (fsmap:make-url->path extra-files-path)

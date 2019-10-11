@@ -2,13 +2,16 @@
 
 (require racket/class racket/list racket/bool racket/string racket/path racket/match racket/local racket/set racket/contract racket/logging
          (for-syntax racket/base racket/path) syntax/modresolve)
-(require db db/util/datetime gregor)
+
+(require db db/util/datetime gregor versioned-box)
+
 (require racket/rerequire)
 (require racket/fasl)
 (require racket/hash)
 (require racket/undefined)
 (require racket/struct)
 (require "charset.rkt")
+(require libuuid)
 
 (provide saved-object% define-saved-class* define-saved-class 
          mixin/saved define-saved-class/mixin void-reader)
@@ -24,6 +27,7 @@
 (provide lib-path  path-begins-with? filepath relative-module-path set-lib-path!)
 (provide database-log)
 
+(provide database-make-token database-verify-token database-get-all-tokens database-expire-token database-expire-all-tokens)
 
 (define class-dep-sema (make-semaphore 1))
 (define cid->paths (make-hasheqv))
@@ -88,6 +92,7 @@
 
 
 (define void-reader (make-readtable (current-readtable)
+                                    #\v 'dispatch-macro read-vbox
                                     #\< 'dispatch-macro read-unreadable
                                     #\{ 'dispatch-macro read-object))
 
@@ -306,11 +311,11 @@ class-field-mutator
     [(_ field-id obj-expr value-expr)
      #'(begin
          (let [(o obj-expr)]
-         (set-field! field-id 
-                     (if (lazy-ref? o) (lazy-deref o) o)
-                     value-expr)
-         (when (lazy-ref? o)
-           (send (lazy-deref o) updated))))]))
+           (set-field! field-id 
+                       (if (lazy-ref? o) (lazy-deref o) o)
+                       value-expr)
+           (when (lazy-ref? o)
+             (send (lazy-deref o) updated))))]))
 
 ;; (define-saved-class name super-expression mud-defn-or-expr ...) defines a saved-class descended from super-expression
 ;; mud-defn-or-expr: as the regular class defn-or-expr, but with nosave varieties for all fields 
@@ -607,7 +612,7 @@ class-field-mutator
 ;; (touch! lr) ensures that lr points to a loaded object (loading from the database if needed)
 
 (define (touch! lr)
-    (void (lazy-deref lr)))
+  (void (lazy-deref lr)))
 
 ;; (lazy-deref lr) produces the object pointed to by lr (from the object table if possible, the database otherwise)
 ;;  produces #f if the object cannot be found in the o-table or the database (i.e. the object has been deleted)
@@ -654,6 +659,11 @@ class-field-mutator
 (define get-singleton-stmt #f)
 (define new-singleton-stmt #f)
 (define log-stmt #f)
+(define new-token-stmt #f)
+(define verify-auth-stmt #f)
+(define tokens-for-oid-stmt #f)
+(define expire-token-stmt #f)
+(define expire-all-tokens-stmt #f)
 (define logger-thread #f)
 
 
@@ -743,6 +753,26 @@ class-field-mutator
                                          (if is-postgres? "$3" "?")
                                          (if is-postgres? "$4" "?"))))
 
+    (set! new-token-stmt  (prepare conn (format "INSERT INTO auth (seq, token, oid, expires) values (~a, ~a, ~a, ~a)"
+                                                (if is-postgres? "$1" "?")
+                                                (if is-postgres? "$2" "?")
+                                                (if is-postgres? "$3" "?")
+                                                (if is-postgres? "$4" "?")
+                                                )))
+
+    (set! verify-auth-stmt (prepare conn (format "SELECT token, expires FROM auth WHERE seq = ~a and oid = ~a"
+                                                 (if is-postgres? "$1" "?")
+                                                 (if is-postgres? "$2" "?"))))
+
+    (set! tokens-for-oid-stmt (prepare conn (format "SELECT seq FROM auth where oid = ~a"
+                                                    (if is-postgres? "$1" "?"))))
+
+    (set! expire-token-stmt (prepare conn (format "DELETE FROM auth WHERE seq = ~a"
+                                                  (if is-postgres? "$1" "?"))))
+
+    (set! expire-all-tokens-stmt (prepare conn (format "DELETE FROM auth WHERE oid = ~a"
+                                                       (if is-postgres? "$1" "?"))))
+    
     (when (thread? logger-thread)
       (kill-thread logger-thread))
 
@@ -898,45 +928,40 @@ database-get-cid! : Symbol Path -> Nat
 
 (define (database-save-object o)
   (unless (database-connected?) (error "database not connected"))
-  (define oid (get-field id o))
-  (define name (get-field name o))
-  
-  ;(eprintf "fields=~a\n" fields)
-  (define indexed-fields (send o save-index))
-  (define saved  (now/moment/utc))
-  (define old-saved (get-field saved o))
-
-  (set-field! saved o saved)
-  
-  (start-transaction _dbc_)
-  ;; TODO: log these issues
-  (with-handlers ([(λ (e) #t) (λ (e)
-                                (set-field! saved o old-saved)
-                                (rollback-transaction _dbc_)
-                                #f)])
-    ; Remove any existing indexed fields and tags
-    (query-exec _dbc_ delete-fields-stmt oid)
-    (query-exec _dbc_ delete-tags-stmt oid)
-    ; Save / Update the object itself
-    (define fields/port (open-output-bytes))
-    (write (send o save) fields/port)
-    (query-exec _dbc_ save-object-stmt name (moment->dbtime saved) (get-output-bytes fields/port) oid)
-    (close-output-port fields/port)
-    ; Save the indexed fields
-    (for ([(field value) (in-hash indexed-fields)])
-      (define value/port (open-output-bytes))
-      (write value value/port)
-      (query-exec _dbc_ save-field-stmt oid (symbol->string field) (get-output-bytes value/port))
-      (close-output-port value/port))
-    ; Save the tags
-    (for* ([(category tags)
-            (in-hash (get-field tags o))]
-           [tag (in-set tags)])
-      (query-exec _dbc_ save-tag-stmt oid category tag))
-    ; That's all, folks
-    (commit-transaction _dbc_)
-    #t))
-
+  (let-values ([(oid) (get-field id o)]
+               [(name) (get-field name o)]
+               [(indexed-fields saved old-saved fields)
+                (with-transaction #:mode read
+                  (values (send o save-index)
+                          (now/moment/utc)
+                          (get-field saved o)
+                          (string->bytes/utf-8 (format "~s" (send o save)))))])
+    (set-field! saved o saved)
+    (start-transaction _dbc_)
+    ;; TODO: log these issues
+    (with-handlers ([(λ (e) #t) (λ (e)
+                                  (set-field! saved o old-saved)
+                                  (rollback-transaction _dbc_)
+                                  #f)])
+      ; Remove any existing indexed fields and tags
+      (query-exec _dbc_ delete-fields-stmt oid)
+      (query-exec _dbc_ delete-tags-stmt oid)
+      ; Save / Update the object itself
+      (query-exec _dbc_ save-object-stmt name (moment->dbtime saved) fields oid)
+      ; Save the indexed fields
+      (for ([(field value) (in-hash indexed-fields)])
+        (define value/port (open-output-bytes))
+        (write value value/port)
+        (query-exec _dbc_ save-field-stmt oid (symbol->string field) (get-output-bytes value/port))
+        (close-output-port value/port))
+      ; Save the tags
+      (for* ([(category tags)
+              (in-hash (get-field tags o))]
+             [tag (in-set tags)])
+        (query-exec _dbc_ save-tag-stmt oid category tag))
+      ; That's all, folks
+      (commit-transaction _dbc_)
+      #t)))
 
 (define-syntax (get-singleton stx)
   (syntax-case stx()
@@ -1042,7 +1067,38 @@ database-get-cid! : Symbol Path -> Nat
   (close-output-port value/port)
   (map (λ (id) (lazy-ref (vector-ref id 0) #f))
        (query-rows _dbc_ search-index-stmt field value/bytes)))
-  
+
+(define (database-make-token o #:expires [expires "9999-01-01T00:00:00Z"])
+  (define oid (lazy-ref-id o))
+  (define seq (uuid-generate/time))
+  (define token (uuid-generate))
+  (query-exec _dbc_ new-token-stmt seq (sha256-bytes (string->bytes/utf-8 token)) oid expires)
+  (string-append oid ":" seq ":" token))
+
+(define (database-verify-token text)
+  (match-define
+    (list oid seq token)
+    (string-split text ":"))
+  (define result (query-rows _dbc_ verify-auth-stmt seq oid))
+  (and (cons? result)
+       (moment<? (now/moment/utc)
+                 (iso8601->moment (vector-ref result 1)))
+       (bytes=? (string->bytes/utf-8 (vector-ref result 0))
+                (sha256-bytes (string->bytes/utf-8 token)))
+       (lazy-ref oid #f)))
+
+(define (database-get-all-tokens o)
+  (define oid (lazy-ref-id o))
+  (query-list _dbc_ tokens-for-oid-stmt oid))
+
+(define (database-expire-token seq)
+  (query-exec _dbc_ expire-token-stmt seq))
+
+(define (database-expire-all-tokens o)
+  (define oid (lazy-ref-id o))
+  (query-exec _dbc_ expire-all-tokens-stmt oid))
+    
+
 
 (define (database-new-object o)
   (define cid (send o get-cid))

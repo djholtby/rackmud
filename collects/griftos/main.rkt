@@ -15,6 +15,7 @@
          racket/file
          racket/logging
          racket/hash
+         versioned-box
          json
          "master.rkt"
          "objects.rkt" (for-syntax "objects.rkt")
@@ -48,7 +49,8 @@
                racket/file
                racket/logging
                racket/hash
-               json)
+               json
+               versioned-box)
    
    
    
