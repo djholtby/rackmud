@@ -185,7 +185,7 @@
      https-port
      (hash-ref cfg 'webserver:web-path "./www")
      (hash-ref cfg 'webserver:servlet-url "servlet")
-     (send master-object get-servlet-handler)
+     (send master-object get-servlet-handler (hash-ref cfg 'webserver:servlet-url "servlet"))
      (hash-ref cfg 'webserver:websock-url "socket")
      (send master-object get-websocket-mapper
            (hash-ref cfg 'webserver:websock-url "socket")
