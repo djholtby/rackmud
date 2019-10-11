@@ -19,8 +19,14 @@
 (provide temp-object%)
 
 (provide object-table object-table/semaphore saved-object=? lazy-ref lazy-ref? touch! get-object oref save-object get-singleton new/griftos
-         instantiate/griftos make-object/griftos send/griftos send*/griftos get-field/griftos set-field!/griftos is-a?/griftos is-a?/c/griftos)
+         instantiate/griftos make-object/griftos send/griftos send*/griftos get-field/griftos set-field!/griftos is-a?/griftos is-a?/c/griftos
+         object?/griftos object=?/griftos object-or-false=?/griftos object->vector/griftos object-interface/griftos
+         object-method-arity-includes?/griftos field-names/griftos object-info/griftos with-method/griftos dynamic-send/griftos
+         send/keyword-apply/griftos send/apply/griftos dynamic-get-field/griftos dynamic-set-field!/griftos field-bound?/griftos
+         class-field-accessor/griftos class-field-mutator/griftos
+)
 
+         
 (provide database-setup database-disconnect database-find-indexed)
 
 (provide cid->paths path->cids)
@@ -273,26 +279,88 @@
   (syntax-case stx ()
     [(_ obj-expr method-id arg ...)
      (syntax/loc stx
-       (send (let [(o obj-expr)]
-               (if (lazy-ref? o) (lazy-deref o) o))
-             method-id arg ...))]))
+       (send 
+        (maybe-lazy-deref obj-expr)
+        method-id arg ...))]
+    [(_ obj-expr method-id arg ... . arglist)
+     (syntax/loc stx
+       (send 
+        (maybe-lazy-deref obj-expr)
+        method-id arg ... . arglist))]))
+
+(define-syntax (send/apply/griftos stx)
+  (syntax-case stx ()
+    [(_ obj-expr method-id arg ... arg-list-expr)
+     (syntax/loc stx
+       (send/apply (maybe-lazy-deref obj-expr) method-id arg ... arg-list-expr))]))
+
+
+(define-syntax (send/keyword-apply/griftos stx)
+  (syntax-case stx ()
+    [(_ obj-expr method-id
+        keyword-list-expr value-list-expr
+        arg ... arg-list-expr)
+     (syntax/loc stx
+       (send/keyword-apply (maybe-lazy-deref obj-expr)
+                           keyword-list-expr value-list-expr
+                           arg ... arg-list-expr))]))
+
+(define-syntax (dynamic-send/griftos stx)
+  (syntax-case stx ()
+    [(_ obj-expr args ...)
+     (syntax/loc stx (dynamic-send (maybe-lazy-deref obj-expr) args ...))]))
 
 (define-syntax (send*/griftos stx)
   (syntax-case stx ()
-    [(_ obj-expr method-invokation ...)
-     (syntax/loc stx
-       (send* (let [(o obj-expr)]
-                (if (lazy-ref? o) (lazy-deref o) o))
-         method-invokation ...))]))
+    [(_ obj-expr msg0 msg1 ...)
+     (syntax/loc stx (send* (maybe-lazy-deref obj-expr) msg0 msg1 ...))]))
+
+(define-syntax (with-method/griftos stx)
+  (syntax-case stx ()
+    [(_ ([id (obj-expr name)] ...) body0 body1 ...)
+     (let ([ids (syntax->list (syntax (id ...)))]
+           [objs (syntax->list (syntax (obj-expr ...)))]
+           [names (syntax->list (syntax (name ...)))])
+       (with-syntax ([(binding-clause ...) (map (lambda (id obj-expr name)
+                                                  (with-syntax ([id id]
+                                                                [obj-expr obj-expr]
+                                                                [name name])
+                                                    (syntax [id ((maybe-lazy-deref obj-expr) name)])))
+                                                ids
+                                                objs
+                                                names)])
+         (syntax/loc stx (with-method (binding-clause ...) body0 body1 ...))))]))                
+
+(define (dynamic-get-field/griftos field-name obj)
+  (dynamic-get-field field-name (maybe-lazy-deref obj)))
+
+(define (dynamic-set-field!/griftos field-name obj v)
+  (dynamic-set-field! field-name (maybe-lazy-deref obj) v))
+
+(define-syntax (field-bound?/griftos stx)
+  (syntax-case stx ()
+    [(_ id obj-expr)
+     (syntax/loc stx (field-bound? id (maybe-lazy-deref obj-expr)))]))
+
+(define-syntax (class-field-accessor/griftos stx)
+  (syntax-case stx ()
+    [(_ class-expr field-id)
+     (syntax/loc stx (let ([proc (class-field-accessor class-expr field-id)])
+                       (lambda (o)
+                         (proc (maybe-lazy-deref o)))))]))
+
+(define-syntax (class-field-mutator/griftos stx)
+  (syntax-case stx ()
+    [(_ class-expr field-id)
+     (syntax/loc stx (let ([proc (class-field-mutator class-expr field-id)])
+                       (lambda (o v)
+                         (proc (mybe-lazy-deref o) v))))]))
 
 #| TODO:
-
-send/apply
-send/keyword-apply
+with-methods
 dynamic-send
-send*
-with-method
-
+send/keyword-apply
+send/apply
 dynamic-get-field
 dynamic-set-field!
 field-bound?
@@ -304,7 +372,7 @@ class-field-mutator
   (syntax-case stx ()
     [(_ field-id obj-expr)
      #'(get-field field-id (let [(o obj-expr)]
-                             (if (lazy-ref? o) (lazy-deref o) o)))]))
+                             (maybe-lazy-deref o)))]))
 
 (define-syntax (set-field!/griftos stx)
   (syntax-case stx ()
@@ -312,7 +380,7 @@ class-field-mutator
      #'(begin
          (let [(o obj-expr)]
            (set-field! field-id 
-                       (if (lazy-ref? o) (lazy-deref o) o)
+                       (maybe-lazy-deref o)
                        value-expr)
            (when (lazy-ref? o)
              (send (lazy-deref o) updated))))]))
@@ -978,11 +1046,47 @@ database-get-cid! : Symbol Path -> Nat
                  (query-exec _dbc_ new-singleton-stmt (get-field id o) cid)
                  (lazy-ref (get-field id o) o)))))]))
 
-(define-syntax (is-a?/griftos stx)
+#|(define-syntax (is-a?/griftos stx)
   (syntax-case stx ()
     [(_ v-expr type)
      #'(let ([v v-expr])
          (is-a? (if (lazy-ref? v) (lazy-deref v) v) type))]))
+|#
+
+(define (maybe-lazy-deref v)
+  (if (lazy-ref? v) (lazy-deref v) v))
+
+(define (is-a?/griftos v type)
+  (is-a? (maybe-lazy-deref v) type))
+
+
+(define (object?/griftos v)
+  (or (object? v) (lazy-ref? v)))
+
+(define (object=?/griftos a b)
+  (object=? (maybe-lazy-deref a)
+            (maybe-lazy-deref b)))
+
+(define (object-or-false=?/griftos a b)
+  (object-or-false=? (maybe-lazy-deref a)
+                     (maybe-lazy-deref b)))
+
+(define (object->vector/griftos object [opaque-v #f])
+  (object->vector (maybe-lazy-deref object) opaque-v))
+
+(define (object-interface/griftos object)
+  (object-interface (maybe-lazy-deref object)))
+
+(define (object-method-arity-includes?/griftos object sym cnt)
+  (object-method-arity-includes? (maybe-lazy-deref object) sym cnt))
+
+(define (field-names/griftos object)
+  (field-names (maybe-lazy-deref object)))
+
+(define (object-info/griftos object)
+  (object-info (maybe-lazy-deref object)))
+
+
 
 
 (struct is-a?-ctc/griftos (<%>)
