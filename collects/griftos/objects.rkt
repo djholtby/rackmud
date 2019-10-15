@@ -170,16 +170,16 @@
   [(define write-proc mud-ref-print)]
   #:methods gen:equal+hash
   [(define equal-proc (lambda (a b r?) (saved-object=? a b)))
-   (define hash-proc  (lambda (l hash-code) (hash-code (cons 'lazy-ref (lazy-ref-id l)))))
-   (define hash2-proc (lambda (l hash-code) (hash-code (cons 'lazy-ref (lazy-ref-id l)))))])
+   (define hash-proc  (lambda (l hash-code) (hash-code (lazy-ref-id l))))
+   (define hash2-proc (lambda (l hash-code) (hash-code (lazy-ref-id l))))])
 
 (struct lazy-ref:weak lazy-ref ()
   #:methods gen:custom-write
   [(define write-proc mud-ref-print)]
   #:methods gen:equal+hash
   [(define equal-proc (lambda (a b r?) (saved-object=? a b)))
-   (define hash-proc  (lambda (l hash-code) (hash-code (cons 'lazy-ref (lazy-ref-id l)))))
-   (define hash2-proc (lambda (l hash-code) (hash-code (cons 'lazy-ref (lazy-ref-id l)))))])
+   (define hash-proc  (lambda (l hash-code) (hash-code (lazy-ref-id l))))
+   (define hash2-proc (lambda (l hash-code) (hash-code (lazy-ref-id l))))])
 
 (define (oref o [weak? #f])
   (unless (is-a? o saved-object%)
@@ -215,7 +215,7 @@
                         (field      
                          ;; tags : (HashTable Symbol (Setof Symbol))
                          [last-access (now/moment/utc)]
-                         [last-update #f]
+                         [last-update (make-vbox #f)]
                          [saved (now/moment/utc)]
                          [created (now/moment/utc)]
                          [tags  (make-hasheq)])
@@ -262,7 +262,7 @@
                         ;; (updated) notes that the object has been updated just now (call this any time you change the object outside of
                         ;;  set-field! which already does this)
                         (define/public (updated)
-                          (set! last-update (now/moment/utc)))
+                          (vbox-set! last-update (now/moment/utc)))
 
                         (define lock-sema (make-semaphore 1))
                         (define/public (lock!)
