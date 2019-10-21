@@ -1,3 +1,3 @@
 (module reader '#%kernel
-  (#%require (submod griftos reader))
-  (#%provide (all-from (submod griftos reader))))
+  (#%require (submod racket/mud/main reader))
+  (#%provide (all-from (submod racket/mud/main reader))))
