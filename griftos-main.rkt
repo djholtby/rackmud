@@ -1,7 +1,7 @@
-#lang griftos
+#lang racket/mud
 
 (define t0 (current-inexact-milliseconds))
-(require net/rfc6455 racket/tcp openssl griftos/griftos-config griftos/telnet griftos/websock griftos/charset "defaults.rkt")
+(require net/rfc6455 racket/tcp openssl racket/mud/griftos-config racket/mud/telnet racket/mud/websock racket/mud/charset "defaults.rkt")
 (define-namespace-anchor anc)
 (define cfg (load-griftos-settings))
 
@@ -62,20 +62,22 @@
 (display "Loading Master Object...")
 (set! t0 (current-inexact-milliseconds))
 (define mudlib (hash-ref cfg 'mudlib-path #f))
-(define mudlib/path (and mudlib (path->directory-path (simplify-path (string->path mudlib)))))
-(define mudlib-collect (hash-ref cfg 'master-collect))
+(define mudlib/path (and mudlib (path->complete-path (path->directory-path (simplify-path (string->path mudlib))))))
+(define mudlib-collect (string->symbol (hash-ref cfg 'master-collect "mudlib")))
+(unless (module-path? mudlib-collect)
+  (error 'mudlib-collection: "Expected module-path? but found ~a" mudlib-collect))
 (define mudlib-module (hash-ref cfg 'master-module "main.rkt"))
 
 
 ;;(when mudlib (set-lib-path! mudlib))
 
 
-(parameterize ([current-library-collection-paths (if mudlib/path
-                                                     (cons mudlib/path (current-library-collection-paths))
-                                                     (current-library-collection-paths))])
+(parameterize ([current-library-collection-links (if mudlib/path
+                                                     (cons (hasheq mudlib-collect (list mudlib/path)) (current-library-collection-links))
+                                                     (current-library-collection-links))])
 
   
-  (define resolved-collect (collection-file-path mudlib-module mudlib-collect #:fail
+  (define resolved-collect (collection-file-path mudlib-module (symbol->string mudlib-collect) #:fail
                                                  (lambda (message)
                                                    (eprintf "Error loading mudlib collect\n~a\n" message)
                                                    (exit -1))))
