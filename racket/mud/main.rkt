@@ -153,4 +153,4 @@
   (set! griftos-version-string s))
 
 
-(module reader syntax/module-reader griftos)
+(module reader syntax/module-reader racket/mud)
