@@ -85,72 +85,65 @@
  (all-from-out "charset.rkt")
   
  (except-out (all-from-out "objects.rkt") 
-             send/griftos
-             send*/griftos
-             get-field/griftos
-             set-field!/griftos
-             new/griftos
-             make-object/griftos
-             instantiate/griftos
-             is-a?/griftos
-             is-a?/c/griftos
+             send/rackmud
+             send*/rackmud
+             get-field/rackmud
+             set-field!/rackmud
+             new/rackmud
+             make-object/rackmud
+             instantiate/rackmud
+             is-a?/rackmud
+             is-a?/c/rackmud
 
-             object?/griftos
-             object=?/griftos
-             object-or-false=?/griftos
-             object->vector/griftos
-             object-interface/griftos
-             object-method-arity-includes?/griftos
-             field-names/griftos
-             object-info/griftos
+             object?/rackmud
+             object=?/rackmud
+             object-or-false=?/rackmud
+             object->vector/rackmud
+             object-interface/rackmud
+             object-method-arity-includes?/rackmud
+             field-names/rackmud
+             object-info/rackmud
 
-             with-method/griftos
-             dynamic-send/griftos
-             send/keyword-apply/griftos
-             send/apply/griftos
-             dynamic-get-field/griftos
-             dynamic-set-field!/griftos
-             field-bound?/griftos
-             class-field-accessor/griftos
-             class-field-mutator/griftos
+             with-method/rackmud
+             dynamic-send/rackmud
+             send/keyword-apply/rackmud
+             send/apply/rackmud
+             dynamic-get-field/rackmud
+             dynamic-set-field!/rackmud
+             field-bound?/rackmud
+             class-field-accessor/rackmud
+             class-field-mutator/rackmud
              )
 
  
  (rename-out  
-  [send/griftos send]
-  [send*/griftos send*]
-  [get-field/griftos get-field]
-  [set-field!/griftos set-field!]
-  [new/griftos new]
-  [instantiate/griftos instantiate]
-  [make-object/griftos make-object]
-  [is-a?/griftos is-a?]
-  [is-a?/c/griftos is-a?/c]
-  [object?/griftos object?]
-  [object=?/griftos object=?]
-  [object-or-false=?/griftos object-or-false=?]
-  [object->vector/griftos object->vector]
-  [object-interface/griftos object-interface]
-  [object-method-arity-includes?/griftos object-method-arity-includes?]
-  [field-names/griftos field-names]
-  [object-info/griftos object-info]
-  [with-method/griftos with-method]
-  [dynamic-send/griftos dynamic-send]
-  [send/keyword-apply/griftos send/keyword-apply]
-  [send/apply/griftos send/apply]
-  [dynamic-get-field/griftos dynamic-get-field]
-  [dynamic-set-field!/griftos dynamic-set-field!]
-  [field-bound?/griftos field-bound?]
-  [class-field-accessor/griftos class-field-accessor]
-  [class-field-mutator/griftos class-field-mutator]
+  [send/rackmud send]
+  [send*/rackmud send*]
+  [get-field/rackmud get-field]
+  [set-field!/rackmud set-field!]
+  [new/rackmud new]
+  [instantiate/rackmud instantiate]
+  [make-object/rackmud make-object]
+  [is-a?/rackmud is-a?]
+  [is-a?/c/rackmud is-a?/c]
+  [object?/rackmud object?]
+  [object=?/rackmud object=?]
+  [object-or-false=?/rackmud object-or-false=?]
+  [object->vector/rackmud object->vector]
+  [object-interface/rackmud object-interface]
+  [object-method-arity-includes?/rackmud object-method-arity-includes?]
+  [field-names/rackmud field-names]
+  [object-info/rackmud object-info]
+  [with-method/rackmud with-method]
+  [dynamic-send/rackmud dynamic-send]
+  [send/keyword-apply/rackmud send/keyword-apply]
+  [send/apply/rackmud send/apply]
+  [dynamic-get-field/rackmud dynamic-get-field]
+  [dynamic-set-field!/rackmud dynamic-set-field!]
+  [field-bound?/rackmud field-bound?]
+  [class-field-accessor/rackmud class-field-accessor]
+  [class-field-mutator/rackmud class-field-mutator]
 
   ))
 
-
-(provide griftos-version-string set-griftos-version-string!)
-(define griftos-version-string "")
-(define (set-griftos-version-string! s)
-  (set! griftos-version-string s))
-
-
-(module reader syntax/module-reader racket/mud)
+(module reader syntax/module-reader rackmud/main)

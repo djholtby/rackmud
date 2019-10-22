@@ -1,7 +1,7 @@
 #lang racket/base
 
 (require "config-file.rkt" racket/hash racket/cmdline)
-(provide load-griftos-settings)
+(provide load-rackmud-settings)
 
 (define default-config
   '#hasheq((mudlib-path . "./lib")
@@ -24,8 +24,8 @@
 
 
 
-(define (load-griftos-settings)
-  (define config-name "griftos.cfg")
+(define (load-rackmud-settings)
+  (define config-name "rackmud.cfg")
   (define overrides (make-hasheq))
   (command-line
    #:once-each

@@ -18,12 +18,12 @@
 
 (provide temp-object%)
 
-(provide object-table object-table/semaphore saved-object=? lazy-ref lazy-ref? touch! get-object oref save-object get-singleton new/griftos
-         instantiate/griftos make-object/griftos send/griftos send*/griftos get-field/griftos set-field!/griftos is-a?/griftos is-a?/c/griftos
-         object?/griftos object=?/griftos object-or-false=?/griftos object->vector/griftos object-interface/griftos
-         object-method-arity-includes?/griftos field-names/griftos object-info/griftos with-method/griftos dynamic-send/griftos
-         send/keyword-apply/griftos send/apply/griftos dynamic-get-field/griftos dynamic-set-field!/griftos field-bound?/griftos
-         class-field-accessor/griftos class-field-mutator/griftos
+(provide object-table object-table/semaphore saved-object=? lazy-ref lazy-ref? touch! get-object oref save-object get-singleton new/rackmud
+         instantiate/rackmud make-object/rackmud send/rackmud send*/rackmud get-field/rackmud set-field!/rackmud is-a?/rackmud is-a?/c/rackmud
+         object?/rackmud object=?/rackmud object-or-false=?/rackmud object->vector/rackmud object-interface/rackmud
+         object-method-arity-includes?/rackmud field-names/rackmud object-info/rackmud with-method/rackmud dynamic-send/rackmud
+         send/keyword-apply/rackmud send/apply/rackmud dynamic-get-field/rackmud dynamic-set-field!/rackmud field-bound?/rackmud
+         class-field-accessor/rackmud class-field-mutator/rackmud
 )
 
          
@@ -275,7 +275,7 @@
                         (will-register object-executor this database-save-object)))
 
 
-(define-syntax (send/griftos stx)
+(define-syntax (send/rackmud stx)
   (syntax-case stx ()
     [(_ obj-expr method-id arg ...)
      (syntax/loc stx
@@ -288,14 +288,14 @@
         (maybe-lazy-deref obj-expr)
         method-id arg ... . arglist))]))
 
-(define-syntax (send/apply/griftos stx)
+(define-syntax (send/apply/rackmud stx)
   (syntax-case stx ()
     [(_ obj-expr method-id arg ... arg-list-expr)
      (syntax/loc stx
        (send/apply (maybe-lazy-deref obj-expr) method-id arg ... arg-list-expr))]))
 
 
-(define-syntax (send/keyword-apply/griftos stx)
+(define-syntax (send/keyword-apply/rackmud stx)
   (syntax-case stx ()
     [(_ obj-expr method-id
         keyword-list-expr value-list-expr
@@ -305,17 +305,17 @@
                            keyword-list-expr value-list-expr
                            arg ... arg-list-expr))]))
 
-(define-syntax (dynamic-send/griftos stx)
+(define-syntax (dynamic-send/rackmud stx)
   (syntax-case stx ()
     [(_ obj-expr args ...)
      (syntax/loc stx (dynamic-send (maybe-lazy-deref obj-expr) args ...))]))
 
-(define-syntax (send*/griftos stx)
+(define-syntax (send*/rackmud stx)
   (syntax-case stx ()
     [(_ obj-expr msg0 msg1 ...)
      (syntax/loc stx (send* (maybe-lazy-deref obj-expr) msg0 msg1 ...))]))
 
-(define-syntax (with-method/griftos stx)
+(define-syntax (with-method/rackmud stx)
   (syntax-case stx ()
     [(_ ([id (obj-expr name)] ...) body0 body1 ...)
      (let ([ids (syntax->list (syntax (id ...)))]
@@ -331,25 +331,25 @@
                                                 names)])
          (syntax/loc stx (with-method (binding-clause ...) body0 body1 ...))))]))                
 
-(define (dynamic-get-field/griftos field-name obj)
+(define (dynamic-get-field/rackmud field-name obj)
   (dynamic-get-field field-name (maybe-lazy-deref obj)))
 
-(define (dynamic-set-field!/griftos field-name obj v)
+(define (dynamic-set-field!/rackmud field-name obj v)
   (dynamic-set-field! field-name (maybe-lazy-deref obj) v))
 
-(define-syntax (field-bound?/griftos stx)
+(define-syntax (field-bound?/rackmud stx)
   (syntax-case stx ()
     [(_ id obj-expr)
      (syntax/loc stx (field-bound? id (maybe-lazy-deref obj-expr)))]))
 
-(define-syntax (class-field-accessor/griftos stx)
+(define-syntax (class-field-accessor/rackmud stx)
   (syntax-case stx ()
     [(_ class-expr field-id)
      (syntax/loc stx (let ([proc (class-field-accessor class-expr field-id)])
                        (lambda (o)
                          (proc (maybe-lazy-deref o)))))]))
 
-(define-syntax (class-field-mutator/griftos stx)
+(define-syntax (class-field-mutator/rackmud stx)
   (syntax-case stx ()
     [(_ class-expr field-id)
      (syntax/loc stx (let ([proc (class-field-mutator class-expr field-id)])
@@ -368,13 +368,13 @@ class-field-accessor
 class-field-mutator
 |#
 
-(define-syntax (get-field/griftos stx)
+(define-syntax (get-field/rackmud stx)
   (syntax-case stx ()
     [(_ field-id obj-expr)
      #'(get-field field-id (let [(o obj-expr)]
                              (maybe-lazy-deref o)))]))
 
-(define-syntax (set-field!/griftos stx)
+(define-syntax (set-field!/rackmud stx)
   (syntax-case stx ()
     [(_ field-id obj-expr value-expr)
      #'(begin
@@ -848,7 +848,7 @@ class-field-mutator
           (thread
            (λ ()
              (let loop ()
-               (match (sync griftos-log-rec)
+               (match (sync rackmud-log-rec)
                  [(vector level msg data topic)
                   (when (string? msg) (database-log level (or topic "racket") msg (backtrace data)))])
                (loop)))))))
@@ -856,9 +856,9 @@ class-field-mutator
 (define (log-level->int ll)
   (or (index-of '(none fatal error warning info debug) ll eq?) 0))
 
-(define griftos-logger (make-logger #f (current-logger) 'info #f))
-(define griftos-log-rec (make-log-receiver (current-logger) 'debug 'griftos 'debug 'grapevine 'warning))
-(current-logger griftos-logger)
+(define rackmud-logger (make-logger #f (current-logger) 'info #f))
+(define rackmud-log-rec (make-log-receiver (current-logger) 'debug 'rackmud 'debug 'grapevine 'warning))
+(current-logger rackmud-logger)
 
 (error-display-handler
  (let ([edh (error-display-handler)])
@@ -1046,7 +1046,7 @@ database-get-cid! : Symbol Path -> Nat
                  (query-exec _dbc_ new-singleton-stmt (get-field id o) cid)
                  (lazy-ref (get-field id o) o)))))]))
 
-#|(define-syntax (is-a?/griftos stx)
+#|(define-syntax (is-a?/rackmud stx)
   (syntax-case stx ()
     [(_ v-expr type)
      #'(let ([v v-expr])
@@ -1056,59 +1056,59 @@ database-get-cid! : Symbol Path -> Nat
 (define (maybe-lazy-deref v)
   (if (lazy-ref? v) (lazy-deref v) v))
 
-(define (is-a?/griftos v type)
+(define (is-a?/rackmud v type)
   (is-a? (maybe-lazy-deref v) type))
 
 
-(define (object?/griftos v)
+(define (object?/rackmud v)
   (or (object? v) (lazy-ref? v)))
 
-(define (object=?/griftos a b)
+(define (object=?/rackmud a b)
   (object=? (maybe-lazy-deref a)
             (maybe-lazy-deref b)))
 
-(define (object-or-false=?/griftos a b)
+(define (object-or-false=?/rackmud a b)
   (object-or-false=? (maybe-lazy-deref a)
                      (maybe-lazy-deref b)))
 
-(define (object->vector/griftos object [opaque-v #f])
+(define (object->vector/rackmud object [opaque-v #f])
   (object->vector (maybe-lazy-deref object) opaque-v))
 
-(define (object-interface/griftos object)
+(define (object-interface/rackmud object)
   (object-interface (maybe-lazy-deref object)))
 
-(define (object-method-arity-includes?/griftos object sym cnt)
+(define (object-method-arity-includes?/rackmud object sym cnt)
   (object-method-arity-includes? (maybe-lazy-deref object) sym cnt))
 
-(define (field-names/griftos object)
+(define (field-names/rackmud object)
   (field-names (maybe-lazy-deref object)))
 
-(define (object-info/griftos object)
+(define (object-info/rackmud object)
   (object-info (maybe-lazy-deref object)))
 
 
 
 
-(struct is-a?-ctc/griftos (<%>)
+(struct is-a?-ctc/rackmud (<%>)
   #:property prop:flat-contract
   (build-flat-contract-property
    #:name
    (λ (ctc)
-     (define <%> (is-a?-ctc/griftos-<%> ctc))
+     (define <%> (is-a?-ctc/rackmud-<%> ctc))
      (define name (object-name <%>))
      (cond [name `(is-a?/c ,name)]
            [(class? <%>) '(is-a?/c unknown%)]
            [else '(is-a?/c unknown<%>)]))
    #:first-order
    (λ (ctc)
-     (define <%> (is-a?-ctc/griftos-<%> ctc))
+     (define <%> (is-a?-ctc/rackmud-<%> ctc))
      (λ (v)
-       (is-a?/griftos v <%>)))
+       (is-a?/rackmud v <%>)))
    #:stronger
    (λ (this other)
-     (define <%> (is-a?-ctc/griftos-<%> this))
-     (if (is-a?-ctc/griftos other)
-         (let ([other<%> (is-a?-ctc/griftos-<%> other)])
+     (define <%> (is-a?-ctc/rackmud-<%> this))
+     (if (is-a?-ctc/rackmud other)
+         (let ([other<%> (is-a?-ctc/rackmud-<%> other)])
            (cond [(and (class? <%>) (class? other<%>))
                   (subclass? <%> other<%>)]
                  [(and (class? <%>) (interface? other<%>))
@@ -1119,23 +1119,23 @@ database-get-cid! : Symbol Path -> Nat
          #f))
    #:equivalent
    (λ (this other)
-     (and (is-a?-ctc/griftos other)
-          (equal? (is-a?-ctc/griftos-<%> this)
-                  (is-a?-ctc/griftos-<%> other))))))
+     (and (is-a?-ctc/rackmud other)
+          (equal? (is-a?-ctc/rackmud-<%> this)
+                  (is-a?-ctc/rackmud-<%> other))))))
          
-(define (is-a?/c/griftos type)
+(define (is-a?/c/rackmud type)
   (unless (or (interface? type)
               (class? type))
     (raise-argument-error
      'is-a?/c
      ("or/c interface? class?")
      type))
-  (is-a?-ctc/griftos type))
+  (is-a?-ctc/rackmud type))
 
   
 
 
-(define-syntax (new/griftos stx)
+(define-syntax (new/rackmud stx)
   (syntax-case stx ()
     [(_ cls-expr (id arg) ...)
      #'(let* ([cv cls-expr]
@@ -1145,7 +1145,7 @@ database-get-cid! : Symbol Path -> Nat
          (if (subclass? cv saved-object%)  (oref o) o))]))
 
 
-(define-syntax (instantiate/griftos stx)
+(define-syntax (instantiate/rackmud stx)
   (syntax-case stx ()
     [(_ cls-expr (by-pos-expr ...) (id by-name-expr) ...)
      #'(let ([cv cls-expr]
@@ -1155,7 +1155,7 @@ database-get-cid! : Symbol Path -> Nat
          (if (subclass? cv saved-object%)  (oref o) o))]))
 
 
-(define-syntax (make-object/griftos stx)
+(define-syntax (make-object/rackmud stx)
   (syntax-case stx ()
     [(_ cls-expr by-pos-expr ...)
      #'(let ([cv cls-expr]

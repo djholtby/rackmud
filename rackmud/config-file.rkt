@@ -85,7 +85,7 @@
         (cfgp (lambda () (cfgl ip)))
       (close-input-port ip))))
 
-;(file->cfg "griftos.cfg")
+;(file->cfg "rackmud.cfg")
 #|(let loop ()
   (let ([v (cfgl test-port)])
     (unless (eq? v 'EOF)

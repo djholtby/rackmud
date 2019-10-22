@@ -29,8 +29,8 @@
 
 (provide make-login-cookie validate-login-cookie auth-account protected-page authed-page logout-headers)
 
-(define login-cookie-name "griftos-login-auth")
-(define redirect-cookie-name "griftos-login-redirect")
+(define login-cookie-name "rackmud-login-auth")
+(define redirect-cookie-name "rackmud-login-redirect")
 (define private-key (make-secret-salt/file "COOKIE"))
 
 (define (make-login-cookie acct [expires "9999-01-01T00:00:00Z"] [secure? #f])
