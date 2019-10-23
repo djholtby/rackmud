@@ -1,9 +1,9 @@
-#lang racket/mud
+#lang rackmud
 
 (define t0 (current-inexact-milliseconds))
-(require net/rfc6455 racket/tcp openssl racket/mud/griftos-config racket/mud/telnet racket/mud/websock racket/mud/charset "defaults.rkt")
+(require net/rfc6455 racket/tcp openssl rackmud/rackmud-config rackmud/telnet rackmud/websock rackmud/charset "defaults.rkt")
 (define-namespace-anchor anc)
-(define cfg (load-griftos-settings))
+(define cfg (load-rackmud-settings))
 
 (define telnet-port (hash-ref cfg 'telnet:port #f))
 (define telnet-ssl-port (hash-ref cfg 'telnet:ssl-port #f))
@@ -36,7 +36,7 @@
   (encodings->charset-req-sequence telnet-encodings))
 
 (unless (or telnet-enabled? telnet-ssl-enabled? http-enabled? https-enabled?)
-  (error 'griftos "telnet and websock are both disabled -- griftos must have at least some kind of outside connection!"))
+  (error 'rackmud "telnet and websock are both disabled -- rackmudos must have at least some kind of outside connection!"))
 
 (display "Establishing Database Connection...")
 (set! t0 (current-inexact-milliseconds))
@@ -199,7 +199,7 @@
   (printf "started in ~vms\n" (round (inexact->exact (- (current-inexact-milliseconds) t0))))
   
   (define shutdown-semaphore (make-semaphore 0))
-  (define (griftos-shutdown!)
+  (define (rackmud-shutdown!)
     (displayln "Shutting down...")
     (when telnet-thread (kill-thread telnet-thread))
     (when telnet-serv (tcp-close telnet-serv))
@@ -220,8 +220,6 @@
             (define ns (namespace-anchor->namespace anc))
             (define (shutdown!)
               (semaphore-post shutdown-semaphore))
-;            (namespace-attach-module (current-namespace) 'griftos ns)
-;            (namespace-require 'griftos ns)
             (parameterize ([current-namespace ns]
                            ;; todo - can parameterize some of the repl parameters to make a better interface
                            )
@@ -234,9 +232,9 @@
   (with-handlers ([exn:break?
                    (lambda (e)
                      (log-info "User Break - Shutting Down")
-                     (griftos-shutdown!))])
+                     (rackmud-shutdown!))])
     (semaphore-wait shutdown-semaphore)
-    (griftos-shutdown!)))
+    (rackmud-shutdown!)))
 
 
    
