@@ -10,7 +10,6 @@
 (define telnet-enabled? (port-number? telnet-port))
 (define telnet-ssl-enabled?
   (and ssl-available?
-       (hash-ref cfg 'telnet:ssl #f)
        (hash-ref cfg 'ssl:certificate #f)
        (hash-ref cfg 'ssl:private-key #f)
        (port-number? telnet-ssl-port)))
@@ -63,7 +62,7 @@
 (set! t0 (current-inexact-milliseconds))
 (define mudlib (hash-ref cfg 'mudlib-path #f))
 (define mudlib/path (and mudlib (path->complete-path (path->directory-path (simplify-path (string->path mudlib))))))
-(define mudlib-collect (string->symbol (hash-ref cfg 'master-collect "mudlib")))
+(define mudlib-collect (string->symbol (hash-ref cfg 'mudlib-collect "mudlib")))
 (unless (module-path? mudlib-collect)
   (error 'mudlib-collection: "Expected module-path? but found ~a" mudlib-collect))
 (define mudlib-module (hash-ref cfg 'master-module "main.rkt"))
