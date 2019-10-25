@@ -1,11 +1,12 @@
 #lang racket/base
 
-(require "config-file.rkt" racket/hash racket/cmdline)
+(require racket/hash racket/cmdline)
 (provide load-rackmud-settings)
 
 (define default-config
-  '#hasheq((mudlib-path . "./lib")
-           (master-module . "custom-master.rkt")
+  '#hasheq((mudlib-path . "./mudlibs/mudlib")
+           (mudlib-collect . "mudlib")
+           (master-module . "main.rkt")
            (master-classname . "custom-master%")
            (thread-count . 4)
            (telnet:port . 4000)
@@ -25,7 +26,7 @@
 
 
 (define (load-rackmud-settings)
-  (define config-name "rackmud.cfg")
+  (define config-name "rackmud-config.rktd")
   (define overrides (make-hasheq))
   (command-line
    #:once-each
@@ -51,7 +52,7 @@
 
    
    )
-  (define loaded-settings (file->cfg config-name))
+  (define loaded-settings (with-input-from-file config-name read))
   (config-merge (config-merge default-config loaded-settings) overrides))
 
 ;(config-merge default-config '#hasheq((database . #hasheq((type . "foo") (port . 222)))
