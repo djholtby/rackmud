@@ -1174,7 +1174,7 @@ database-get-cid! : Symbol Path -> Nat
 
 (define (database-make-token o #:expires [expires "9999-01-01T00:00:00Z"])
   (define oid (lazy-ref-id o))
-  (define seq (uuid-string/time))
+  (define seq (uuid-string))
   (define token (uuid-string))
   (query-exec _dbc_ new-token-stmt seq (sha256-bytes (string->bytes/utf-8 token)) oid expires)
   (string-append oid ":" seq ":" token))
