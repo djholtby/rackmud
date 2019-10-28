@@ -1,6 +1,7 @@
+#!/usr/local/bin/racket
 #lang racket
 
-(require rackmud/rackmud-config setup/setup)
+(require "config.rkt" setup/setup)
 
 (define cfg (load-rackmud-settings))
 
