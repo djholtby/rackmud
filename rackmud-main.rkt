@@ -1,3 +1,4 @@
+#!/usr/local/bin/racket
 #lang rackmud
 
 (define t0 (current-inexact-milliseconds))
@@ -54,7 +55,7 @@
    [("-S" "--secure-telnet")  "enables secure telnet" (hash-set! overrides 'telnet:ssl #t)]
    [("-N" "--no-secure-telnet") "disables secure telnet" (hash-set! overrides 'telnet:ssl #f)])
   
-  (define loaded-settings (with-input-from-file config-name read))
+  (define loaded-settings (make-hasheq (with-input-from-file config-name read)))
   (config-merge (config-merge default-config loaded-settings) overrides))
 
 (define cfg (load-rackmud-settings))
