@@ -9,7 +9,6 @@
           web-server/dispatchers/dispatch
           net/url
           net/rfc6455
-          libuuid
           (for-syntax racket/base)
           racket/stxparam
           "objects.rkt"
