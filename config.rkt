@@ -32,6 +32,7 @@
    #:once-each
 
    [("-c" "--config") cfg "loads settings from <cfg> (subsequent flags will override)" (set! config-name cfg)]
+   [("-b" "--build") "compiles the mudlib (and then terminates)" (hash-set! overrides 'build #t)]
    [("-p" "--telnet-port") port "runs telnet on <port>"
     (hash-set! overrides 'telnet:port (string->number port))]
    [("-s" "--secure-telnet-port") port "runs secure telnet on <port> (implies -S)"

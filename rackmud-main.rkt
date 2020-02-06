@@ -2,12 +2,33 @@
 #lang rackmud
 
 (define t0 (current-inexact-milliseconds))
-(require net/rfc6455 racket/tcp openssl rackmud/telnet rackmud/websock rackmud/charset "defaults.rkt" "config.rkt")
+(require net/rfc6455 racket/tcp openssl rackmud/telnet rackmud/websock rackmud/charset setup/setup "defaults.rkt" "config.rkt")
 (define-namespace-anchor anc)
 
 
 
 (define cfg (load-rackmud-settings))
+
+(define build? (hash-ref cfg 'build #f))
+(when build?
+  (define mudlib (hash-ref cfg 'mudlib-path #f))
+  (define mudlib/path (and mudlib (path->complete-path (path->directory-path (simplify-path (string->path mudlib))))))
+  (define mudlib-collect (string->symbol (hash-ref cfg 'mudlib-collect "mudlib")))
+  (unless (module-path? mudlib-collect)
+    (error 'mudlib-collection: "Expected module-path? but found ~a" mudlib-collect))
+  (define mudlib-module (hash-ref cfg 'master-module "main.rkt"))
+  
+  (parameterize ([current-library-collection-links (if mudlib/path
+                                                       (cons (hasheq mudlib-collect (list mudlib/path)) (current-library-collection-links))
+                                                       (current-library-collection-links))])
+    (exit
+     (if 
+      (setup #:collections `((,(symbol->string mudlib-collect))))
+      0 ; success
+      1 ; failure
+      ))))
+
+  
 
 (define telnet-port (hash-ref cfg 'telnet:port #f))
 (define telnet-ssl-port (hash-ref cfg 'telnet:ssl-port #f))
