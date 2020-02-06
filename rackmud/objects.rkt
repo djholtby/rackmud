@@ -75,6 +75,7 @@
                [(undefined) undefined]
                [(mutable-set:) (apply mutable-set (let loop ([acc '()]) (define v (read in-buffer)) (if (eof-object? v) acc (loop
                                                                                                                              (cons v acc)))))]
+               [(set:) (apply set (let loop ([acc '()]) (define v (read in-buffer)) (if (eof-object? v) acc (loop (cons v acc)))))]
                [(moment)
                 (define moment-info (read-line in-buffer))
                 (iso8601/tzid->moment (string-trim moment-info))]
