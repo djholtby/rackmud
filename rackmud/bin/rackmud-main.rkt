@@ -1,13 +1,18 @@
-#!/usr/local/bin/racket
-#lang rackmud
+#lang racket/base
 
 (define t0 (current-inexact-milliseconds))
-(require net/rfc6455 racket/tcp openssl rackmud/telnet rackmud/websock rackmud/charset setup/setup "defaults.rkt" "config.rkt")
+(require net/rfc6455 racket/tcp openssl "../main.rkt" "../telnet.rkt" "../websock.rkt" "../charset.rkt" setup/setup "defaults.rkt" "config.rkt")
 (define-namespace-anchor anc)
 
 
 
 (define cfg (load-rackmud-settings))
+
+(define missing-file? (hash-ref cfg 'no-file? #f))
+
+(when missing-file?
+  (eprintf "Configuration file missing!\n")
+  (exit 1))
 
 (define build? (hash-ref cfg 'build #f))
 (when build?

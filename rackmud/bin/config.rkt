@@ -1,7 +1,7 @@
 #lang racket/base
 
 (require racket/hash racket/cmdline)
-(provide load-rackmud-settings)
+(provide load-rackmud-settings default-config)
 
 (define default-config
   '#hasheq((mudlib-path . "./mudlibs/mudlib")
@@ -43,12 +43,14 @@
     (hash-set! overrides 'ssl:private-key key)]
     
    #:once-any
-   [("-i" "--interactive") "run with a GriftOS REPL hooked into STDIN and STDOUT" (hash-set! overrides 'interactive #t)]
-   [("--not-interactive") "disables REPL (if enable by cfg file" (hash-set! overrides 'interactive #f)]
+   [("-i" "--interactive") "run with a Racket REPL hooked into STDIN and STDOUT" (hash-set! overrides 'interactive #t)]
+   [("--not-interactive") "disables REPL (if enable by cfg file)" (hash-set! overrides 'interactive #f)]
    
    #:once-any
    [("-S" "--secure-telnet")  "enables secure telnet" (hash-set! overrides 'telnet:ssl #t)]
    [("-N" "--no-secure-telnet") "disables secure telnet" (hash-set! overrides 'telnet:ssl #f)])
   
-  (define loaded-settings (make-hasheq (with-input-from-file config-name read)))
+  (define loaded-settings (with-handlers ([exn:fail:filesystem? (λ (e) (make-hasheq '((no-file? . #t))))])
+                            (make-hasheq (with-input-from-file config-name read))))
+  
   (config-merge (config-merge default-config loaded-settings) overrides))
