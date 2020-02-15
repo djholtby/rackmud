@@ -10,7 +10,6 @@
 (require racket/hash)
 (require racket/undefined)
 (require racket/struct)
-(require "charset.rkt")
 (require uuid)
 
 (provide saved-object% define-saved-class* define-saved-class 
