@@ -7,7 +7,7 @@
 
 (require json)
 (require "objects.rkt")
-(require "connection.rkt")
+(require telnet/connection)
 (require "scheduler.rkt")
 (require racket/rerequire)
 (provide master-object master<%> start-scheduler! shut-down! load-master-object!)

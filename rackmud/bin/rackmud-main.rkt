@@ -1,7 +1,7 @@
 #lang racket/base
 
 (define t0 (current-inexact-milliseconds))
-(require net/rfc6455 racket/tcp openssl "../main.rkt" "../telnet.rkt" "../websock.rkt" "../charset.rkt" setup/setup "defaults.rkt" "config.rkt")
+(require net/rfc6455 racket/tcp openssl "../main.rkt" telnet "../websock.rkt" telnet/charset setup/setup "defaults.rkt" "config.rkt")
 (define-namespace-anchor anc)
 
 

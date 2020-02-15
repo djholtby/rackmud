@@ -1,6 +1,6 @@
 #lang racket/base
 
-(require (for-syntax racket/base) racket/class racket/contract racket/bool racket/list racket/stxparam "objects.rkt" "connection.rkt")
+(require (for-syntax racket/base) racket/class racket/contract racket/bool racket/list racket/stxparam "objects.rkt" telnet/connection)
 
 (provide vars (rename-out [transmit/param transmit] [set-state!/param set-state!] ) msg make-menu menu% new-telnet-menu)
 

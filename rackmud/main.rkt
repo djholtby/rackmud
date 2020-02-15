@@ -17,16 +17,14 @@
          racket/hash
          versioned-box
          json
+         telnet/connection
+         telnet/mxp
          "master.rkt"
          "objects.rkt" (for-syntax "objects.rkt")
-         "connection.rkt"
-         "telnet.rkt"
-         "msdp.rkt"
          "syncq.rkt"
          "pq.rkt"
          "scheduler.rkt"
          "logger.rkt"
-         "charset.rkt"
          )
 
 (provide
@@ -70,19 +68,15 @@
                racket/logging
                racket/hash
                json
-               versioned-box)
+               versioned-box
+               telnet/connection
+               telnet/mxp)
    
-   
-   
- (all-from-out "msdp.rkt")
- (all-from-out "telnet.rkt")
- (all-from-out "connection.rkt")
  (all-from-out "master.rkt")
  (all-from-out "syncq.rkt")
  (all-from-out "pq.rkt")
  (all-from-out "scheduler.rkt")
  (all-from-out "logger.rkt")
- (all-from-out "charset.rkt")
   
  (except-out (all-from-out "objects.rkt") 
              send/rackmud
