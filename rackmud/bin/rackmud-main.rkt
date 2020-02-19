@@ -1,7 +1,7 @@
 #lang racket/base
 
 (define t0 (current-inexact-milliseconds))
-(require net/rfc6455 racket/tcp openssl "../main.rkt" telnet "../websock.rkt" telnet/charset "defaults.rkt" "config.rkt")
+(require net/rfc6455 racket/tcp openssl "../main.rkt" telnet "../websock.rkt" telnet/charset "config.rkt")
 (define-namespace-anchor anc)
 
 
@@ -107,7 +107,7 @@
     (set-lib-path! base-lib-path))
   
   
-  (start-scheduler! (hash-ref cfg 'thread-count DEFAULT-THREAD-COUNT))  
+  (start-scheduler! (hash-ref cfg 'thread-count))  
   ;(displayln (current-library-collection-paths))
   (load-master-object! resolved-collect
                        (string->symbol (hash-ref cfg 'master-classname "custom-master%")))
