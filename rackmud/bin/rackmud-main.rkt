@@ -1,7 +1,7 @@
 #lang racket/base
 
 (define t0 (current-inexact-milliseconds))
-(require net/rfc6455 racket/tcp openssl "../main.rkt" telnet "../websock.rkt" telnet/charset setup/setup "defaults.rkt" "config.rkt")
+(require net/rfc6455 racket/tcp openssl "../main.rkt" telnet "../websock.rkt" telnet/charset "defaults.rkt" "config.rkt")
 (define-namespace-anchor anc)
 
 
@@ -14,82 +14,6 @@
   (eprintf "Configuration file missing!\n")
   (exit 1))
 
-(define build? (hash-ref cfg 'build #f))
-(when build?
-  (define mudlib (hash-ref cfg 'mudlib-path #f))
-  (define mudlib/path (and mudlib (path->complete-path (path->directory-path (simplify-path (string->path mudlib))))))
-  (define mudlib-collect (string->symbol (hash-ref cfg 'mudlib-collect "mudlib")))
-  (unless (module-path? mudlib-collect)
-    (error 'mudlib-collection: "Expected module-path? but found ~a" mudlib-collect))
-  (define mudlib-module (hash-ref cfg 'master-module "main.rkt"))
-  
-  (parameterize ([current-library-collection-links (if mudlib/path
-                                                       (cons (hasheq mudlib-collect (list mudlib/path)) (current-library-collection-links))
-                                                       (current-library-collection-links))])
-    (exit
-     (if 
-      (setup #:collections `((,(symbol->string mudlib-collect))))
-      0 ; success
-      1 ; failure
-      ))))
-
-  
-
-(define telnet-port (hash-ref cfg 'telnet:port #f))
-(define telnet-ssl-port (hash-ref cfg 'telnet:ssl-port #f))
-(define telnet-enabled? (port-number? telnet-port))
-(define telnet-ssl-enabled?
-  (and ssl-available?
-       (hash-ref cfg 'ssl:certificate #f)
-       (hash-ref cfg 'ssl:private-key #f)
-       (port-number? telnet-ssl-port)))
-
-(define http-port (hash-ref cfg 'webserver:port #f))
-(define http-enabled? (and (hash-ref cfg 'webserver:http #f)
-                           (port-number? http-port)))
-
-(define https-port (hash-ref cfg 'webserver:ssl-port #f))
-(define https-enabled? (and ssl-available?
-                            (hash-ref cfg 'webserver:https #f)
-                            (hash-ref cfg 'ssl:certificate #f)
-                            (hash-ref cfg 'ssl:private-key #f)
-                            (port-number? https-port)))
-                            
-(define telnet-encodings
-  (and (or telnet-enabled? telnet-ssl-enabled?)
-       ;; convert the encodings list from the config file into the names that (mostly) always work with iconv
-       (let ([encodings (map encoding->symbol (hash-ref cfg 'telnet:encodings '("ASCII")))])
-         ;; If they didn't include ASCII, they should have done as a last resort, since telnet MUST default to ASCII
-         (if (memq 'ASCII encodings) encodings (append encodings '(ASCII))))))
-(define telnet-charset-seq
-  (encodings->charset-req-sequence telnet-encodings))
-
-(unless (or telnet-enabled? telnet-ssl-enabled? http-enabled? https-enabled?)
-  (error 'rackmud "telnet and websock are both disabled -- rackmud must have at least some kind of outside connection!"))
-
-(display "Establishing Database Connection...")
-(set! t0 (current-inexact-milliseconds))
-;; First, establish a DB connection so that the master object can be loaded
-(let ([db-type (hash-ref cfg 'database:type #f)]
-      [db-db (hash-ref cfg 'database:name #f)]
-      [db-user (hash-ref cfg 'database:username #f)]
-      [db-pass (hash-ref cfg 'database:password #f)]
-      [db-srv (hash-ref cfg 'database:server #f)]
-      [db-port (hash-ref cfg 'database:port #f)]
-      [db-sock (hash-ref cfg 'database:socket #f)])
-  (when db-type
-    (database-setup (string->symbol db-type) db-port db-sock db-srv db-db db-user db-pass)))
-(printf "connected in ~vms\n" (round (inexact->exact (- (current-inexact-milliseconds) t0))))
-
-;; Next, start the scheduler so events can be processed
-
-
-
-
-
-;; With that taken care of, load the master object
-(display "Loading Master Object...")
-(set! t0 (current-inexact-milliseconds))
 (define mudlib (hash-ref cfg 'mudlib-path #f))
 (define mudlib/path (and mudlib (path->complete-path (path->directory-path (simplify-path (string->path mudlib))))))
 (define mudlib-collect (string->symbol (hash-ref cfg 'mudlib-collect "mudlib")))
@@ -97,23 +21,91 @@
   (error 'mudlib-collection: "Expected module-path? but found ~a" mudlib-collect))
 (define mudlib-module (hash-ref cfg 'master-module "main.rkt"))
 
+;(parameterize ([current-library-collection-links (if mudlib/path
+;                                                       (cons (hasheq mudlib-collect (list mudlib/path)) (current-library-collection-links))
+;                                                       (current-library-collection-links))])
 
-;;(when mudlib (set-lib-path! mudlib))
+(parameterize ([current-library-collection-paths (if mudlib/path
+                                                     (cons  mudlib/path (current-library-collection-paths))
+                                                     (current-library-collection-paths))])
+  (define build? (hash-ref cfg 'build #f))
+  (when build?
+    (define setup (dynamic-require (collection-file-path "setup.rkt" "setup") 'setup))
+;    (displayln (collection-path (symbol->string mudlib-collect)))
+;    (displayln mudlib/path)
+    (exit
+     (if 
+      (setup #:collections `((,(symbol->string mudlib-collect))))
+      0 ; success
+      1 ; failure
+      )))
+
+  
+
+  (define telnet-port (hash-ref cfg 'telnet:port #f))
+  (define telnet-ssl-port (hash-ref cfg 'telnet:ssl-port #f))
+  (define telnet-enabled? (port-number? telnet-port))
+  (define telnet-ssl-enabled?
+    (and ssl-available?
+         (hash-ref cfg 'ssl:certificate #f)
+         (hash-ref cfg 'ssl:private-key #f)
+         (port-number? telnet-ssl-port)))
+  
+  (define http-port (hash-ref cfg 'webserver:port #f))
+  (define http-enabled? (and (hash-ref cfg 'webserver:http #f)
+                             (port-number? http-port)))
+  
+  (define https-port (hash-ref cfg 'webserver:ssl-port #f))
+  (define https-enabled? (and ssl-available?
+                              (hash-ref cfg 'webserver:https #f)
+                              (hash-ref cfg 'ssl:certificate #f)
+                              (hash-ref cfg 'ssl:private-key #f)
+                              (port-number? https-port)))
+  
+  (define telnet-encodings
+    (and (or telnet-enabled? telnet-ssl-enabled?)
+         ;; convert the encodings list from the config file into the names that (mostly) always work with iconv
+         (let ([encodings (map encoding->symbol (hash-ref cfg 'telnet:encodings '("ASCII")))])
+           ;; If they didn't include ASCII, they should have done as a last resort, since telnet MUST default to ASCII
+           (if (memq 'ASCII encodings) encodings (append encodings '(ASCII))))))
+  (define telnet-charset-seq
+    (encodings->charset-req-sequence telnet-encodings))
+  
+  (unless (or telnet-enabled? telnet-ssl-enabled? http-enabled? https-enabled?)
+    (error 'rackmud "telnet and websock are both disabled -- rackmud must have at least some kind of outside connection!"))
+  
+  (display "Establishing Database Connection...")
+  (set! t0 (current-inexact-milliseconds))
+  ;; First, establish a DB connection so that the master object can be loaded
+  (let ([db-type (hash-ref cfg 'database:type #f)]
+        [db-db (hash-ref cfg 'database:name #f)]
+        [db-user (hash-ref cfg 'database:username #f)]
+        [db-pass (hash-ref cfg 'database:password #f)]
+        [db-srv (hash-ref cfg 'database:server #f)]
+        [db-port (hash-ref cfg 'database:port #f)]
+        [db-sock (hash-ref cfg 'database:socket #f)])
+    (when db-type
+      (database-setup (string->symbol db-type) db-port db-sock db-srv db-db db-user db-pass)))
+  (printf "connected in ~vms\n" (round (inexact->exact (- (current-inexact-milliseconds) t0))))
+  
+  ;; Next, start the scheduler so events can be processed
+  
+  
+  
 
 
-(parameterize ([current-library-collection-links
-                (if mudlib/path
-                    (cons (hasheq mudlib-collect (list mudlib/path)) (current-library-collection-links))
-                    (current-library-collection-links))])
+  ;; With that taken care of, load the master object
+  (display "Loading Master Object...")
+  (set! t0 (current-inexact-milliseconds))
   
   (define resolved-collect (collection-file-path mudlib-module (symbol->string mudlib-collect) #:fail
                                                  (lambda (message)
                                                    (eprintf "Error loading mudlib collect\n~a\n" message)
                                                    (exit -1))))
-
+  
   (let-values ([(base-lib-path module-name _) (split-path resolved-collect)])
     (set-lib-path! base-lib-path))
-
+  
   
   (start-scheduler! (hash-ref cfg 'thread-count DEFAULT-THREAD-COUNT))  
   ;(displayln (current-library-collection-paths))
