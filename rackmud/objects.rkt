@@ -11,6 +11,7 @@
 (require racket/undefined)
 (require racket/struct)
 (require uuid)
+(require "db.rkt")
 
 (provide saved-object% define-saved-class* define-saved-class 
          mixin/saved define-saved-class/mixin void-reader)
@@ -127,30 +128,10 @@
 
 
 (define (database-setup db-type db-port db-sock db-srv db-db db-user db-pass)
-  (set-database-connection!
-   (case db-type
-     [(mysql) (mysql-connect
-               #:user db-user
-               #:database db-db
-               #:server (if db-srv db-srv "localhost")
-               #:port (if db-port db-port 3306)
-               #:socket db-sock
-               #:password db-pass)]
-     [(postgres) (postgresql-connect
-                  #:user db-user
-                  #:database db-db
-                  #:server (if db-srv db-srv "localhost")
-                  #:port (if db-port db-port 5432)
-                  #:socket db-sock
-                  #:password db-pass)]
-     [(sqlite) (sqlite3-connect
-                #:database db-db)]
-     [(odbc) (odbc-connect
-              #:user db-user
-              #:dsn db-db
-              #:password db-pass)]
-     [else (raise-argument-error 'database-setup "dbtype?" db-type)])))
-  
+  (set-database-connection! (make-rackmud-db-connection db-type db-port db-sock db-srv db-db db-user db-pass)))
+   
+
+
 
 (define (mud-ref-print lr port mode)
   (case mode

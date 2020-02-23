@@ -41,7 +41,7 @@
       (when trigger?
         (define epsilon-state (enter))
         (when (and allow-epsilon? (symbol? epsilon-state))
-          (set-state! epsilon-state #:allow-epsilon? #f))))))
+          (set-state! epsilon-state #:allow-epsilon? #t))))))
 #|
 (define (make-telnet-transmitter tn)
   (define (transmit . messages)

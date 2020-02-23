@@ -1,10 +1,10 @@
 #lang racket/base
 
 (require racket/hash racket/cmdline)
-(provide load-rackmud-settings default-config)
+(provide load-rackmud-settings default-config default-config-name)
 
 (define default-config
-  '#hasheq((mudlib-path . "./mudlibs/mudlib")
+  '#hasheq((mudlib-path . "collects")
            (mudlib-collect . "mudlib")
            (master-module . "main.rkt")
            (master-classname . "custom-master%")
@@ -16,6 +16,7 @@
            (webserver:servlet-url . "/servlet")
            (webserver:websock-url . "/socket")))
 
+(define default-config-name "rackmud-config.rktd")
 
 (define (config-merge base adjustments)
   (hash-union base adjustments
@@ -26,7 +27,7 @@
 
 
 (define (load-rackmud-settings)
-  (define config-name "rackmud-config.rktd")
+  (define config-name default-config-name)
   (define overrides (make-hasheq))
   (command-line
    #:once-each

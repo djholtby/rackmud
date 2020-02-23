@@ -11,6 +11,8 @@
 (define missing-file? (hash-ref cfg 'no-file? #f))
 
 (when missing-file?
+  
+
   (eprintf "Configuration file missing!\n")
   (exit 1))
 
@@ -52,12 +54,10 @@
          (port-number? telnet-ssl-port)))
   
   (define http-port (hash-ref cfg 'webserver:port #f))
-  (define http-enabled? (and (hash-ref cfg 'webserver:http #f)
-                             (port-number? http-port)))
+  (define http-enabled? (port-number? http-port))
   
   (define https-port (hash-ref cfg 'webserver:ssl-port #f))
   (define https-enabled? (and ssl-available?
-                              (hash-ref cfg 'webserver:https #f)
                               (hash-ref cfg 'ssl:certificate #f)
                               (hash-ref cfg 'ssl:private-key #f)
                               (port-number? https-port)))
@@ -202,7 +202,6 @@
     (start-webserver
      (cond [(not http-enabled?) 'https]
            [(not https-enabled?) 'http]
-           [(hash-ref cfg 'webserver:ssl-redirect #f) 'http->https]
            [else 'http+https])
      http-port
      https-port
@@ -218,7 +217,7 @@
      (hash-ref cfg 'ssl:private-key #f)))
 
   (printf "started in ~vms\n" (round (inexact->exact (- (current-inexact-milliseconds) t0))))
-  
+
   (define shutdown-semaphore (make-semaphore 0))
   (define (rackmud-shutdown!)
     (displayln "Shutting down...")
