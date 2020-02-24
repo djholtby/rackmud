@@ -1,7 +1,7 @@
 #lang racket/base
 
 (define t0 (current-inexact-milliseconds))
-(require net/rfc6455 racket/tcp openssl "../main.rkt" telnet "../websock.rkt" telnet/charset "config.rkt")
+(require net/rfc6455 racket/tcp openssl "../main.rkt" telnet "../websock.rkt" telnet/charset "config.rkt" "new-setup.rkt")
 (define-namespace-anchor anc)
 
 
@@ -12,9 +12,9 @@
 
 (when missing-file?
   
-
-  (eprintf "Configuration file missing!\n")
-  (exit 1))
+  (set! cfg (rackmud-configure cfg))
+  (unless cfg
+    (exit 1)))
 
 (define mudlib (hash-ref cfg 'mudlib-path #f))
 (define mudlib/path (and mudlib (path->complete-path (path->directory-path (simplify-path (string->path mudlib))))))

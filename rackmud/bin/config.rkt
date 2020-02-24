@@ -3,8 +3,10 @@
 (require racket/hash racket/cmdline)
 (provide load-rackmud-settings default-config default-config-name)
 
+(define default-config-name "rackmud-config.rktd")
+
 (define default-config
-  '#hasheq((mudlib-path . "collects")
+  `#hasheq((mudlib-path . #f)
            (mudlib-collect . "mudlib")
            (master-module . "main.rkt")
            (master-classname . "custom-master%")
@@ -14,9 +16,10 @@
            (webserver:port . 8000)
            (webserver:www-path . "/www")
            (webserver:servlet-url . "/servlet")
-           (webserver:websock-url . "/socket")))
+           (webserver:websock-url . "/socket")
+           (filename . ,default-config-name)))
 
-(define default-config-name "rackmud-config.rktd")
+
 
 (define (config-merge base adjustments)
   (hash-union base adjustments
@@ -32,7 +35,9 @@
   (command-line
    #:once-each
 
-   [("-c" "--config") cfg "loads settings from <cfg> (subsequent flags will override)" (set! config-name cfg)]
+   [("-c" "--config") cfg "loads settings from <cfg> (subsequent flags will override)"
+    (set! config-name cfg)
+    (hash-set! overrides 'filename cfg)]
    [("-b" "--build") "compiles the mudlib (and then terminates)" (hash-set! overrides 'build #t)]
    [("-p" "--telnet-port") port "runs telnet on <port>"
     (hash-set! overrides 'telnet:port (string->number port))]

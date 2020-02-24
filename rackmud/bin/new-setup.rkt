@@ -3,6 +3,9 @@
 (require racket/string racket/match racket/format racket/list racket/class racket/tcp "../menu.rkt" "../db.rkt" "config.rkt" telnet/charset racket/undefined db/base racket/pretty
          racket/runtime-path racket/file
          (for-syntax racket/base))
+
+(provide rackmud-configure)
+
 ;(require racket/port racket/system)
 ;(define terminal-width (min 120 (or (string->number (string-trim (with-output-to-string (lambda () (system "tput cols"))))) 80)))
 
@@ -56,13 +59,14 @@
 
 
 (define (save-config vars)
-  (define filename (hash-ref vars 'config-name))
-  (define am (hash-ref vars 'action-map))
   (define cfg (hash-ref vars 'config))
+  (define filename (hash-ref cfg 'filename))
+  (define am (hash-ref vars 'action-map))
+
   (define issues (hash-ref vars 'issues))
   (unless (string=? issues "")
     (error 'save-config "Cannot save a config with invalid settings"))
-  (define out (open-output-file filename))
+  (define out (open-output-file filename #:exists 'truncate/replace))
   (define new-cfg  (reverse (filter cdr (map (lambda (sym) (cons sym (hash-ref cfg sym #f))) (hash-values am)))))
   (parameterize ([pretty-print-columns 160])
     (pretty-print new-cfg out 1))
@@ -343,10 +347,11 @@
     (config-option out 'webserver:websock-url counter int->setting config-table error-table)
     (config-option out 'webserver:websock-client-url counter int->setting config-table error-table)))
 
-(define (config->string config-table filename)
+(define (config->string config-table)
   (define out (open-output-string))
   (define counter (box 1))
   (define int->setting (make-hasheqv))
+  (define filename (hash-ref config-table 'filename))
   (define-values (issues error-table)  (config-issues config-table))
   (fprintf out "===Configuration File Settings===\n")
   (let* ([int (box++ counter)]
@@ -397,22 +402,23 @@
         (transmit eof)]
        [else 'start])]]
    [confirm-name
-    [(if (string=? default-config-name (hash-ref vars 'config-name))
+    [(if (string=? default-config-name (hash-ref (hash-ref vars 'config) 'filename))
          'validate
          (begin
            (transmit (format "You have launched the server with a non-default config file '~a'.  Would you like to use this name for the new config file? (Answering 'no' will use the default [~a])\n"
-                             (hash-ref vars 'config-name) default-config-name))
+                             (hash-ref (hash-ref vars 'config) 'filename) default-config-name))
            #f))]
-    [(match
+    [(define cfg (hash-ref vars 'config))
+     (match
        [(pregexp #px"^\\s*y(a|eah|es)?\\s*$") 'validate]
-       [(pregexp #px"^\\s*(n(o|ah|ope)?)?\\s*$") (hash-set! vars 'config-name default-config-name) 'validate]
+       [(pregexp #px"^\\s*(n(o|ah|ope)?)?\\s*$") (hash-set! cfg 'filename default-config-name) 'validate]
        [else (transmit "Please answer Y or N only\n") #f])]]
    [confirm-settings
-    [(define-values (msg action-map issues) (config->string (hash-ref vars 'config) (hash-ref vars 'config-name)))
+    [(define-values (msg action-map issues) (config->string (hash-ref vars 'config)))
      (hash-set! vars 'action-map action-map)
      (hash-set! vars 'issues issues)
      (transmit msg
-               (format "\nEnter a setting to change, or press [Enter] to write your settings to '~a'\n" (hash-ref vars 'config-name)))]
+               (format "\nEnter a setting to change, or press [Enter] to write your settings to '~a'\n" (hash-ref (hash-ref vars 'config) 'filename))) #f]
     [(let* ([selection (string->number (string-trim msg))]
             [action-map (hash-ref vars 'action-map)]
             [issues (hash-ref vars 'issues)]
@@ -683,19 +689,21 @@
                default-config-name
                "]\e[0m\n") #f]
     [(define tmsg (string-trim msg))
+     (define cfg (hash-ref vars 'config))
      (define-values [root filename must-be-dir?]
        (if (path-string? tmsg) (split-path tmsg) (values #f #f #f)))
      (cond [(string=? tmsg "") 'confirm-settings]
            [(or must-be-dir? (and filename (directory-exists? tmsg)))
             (transmit "configuration file must be a file, not a directory\n") #f]
            [(eq? root 'relative)
-            (hash-set! vars 'config-name tmsg) 'confirm-settings]
+            (hash-set! cfg 'filename tmsg) 'confirm-settings]
            [(and (path? root) (directory-exists? root))
-            (hash-set! vars 'config-name tmsg) 'confirm-settings]
+            (hash-set! cfg 'filename tmsg) 'confirm-settings]
            [(path? root) (transmit (format "Directory ~v does not exist\n" root)) #f]
            [else (transmit "Invalid filename") #f])]]
  ))   
-(define (new-setup current-config config-name)
+
+(define (rackmud-configure current-config #:start [start 'start])
   (define return-status (void))
   (define (cli-transmit/single msg)
     (match msg
@@ -709,24 +717,24 @@
     (for-each cli-transmit/single messages))
 
   (define new-config (hash-copy current-config))
-  (define vars (make-hasheq `((config . ,new-config) (config-name . ,config-name))))
+  (define vars (make-hasheq `((config . ,new-config))))
   
   (define new-menu                                                                                                                                                                                                (new new-install-menu%
          [transmit-func cli-transmit]
          [vars vars]))
-  (send new-menu set-state! 'start)
+  (send new-menu set-state! start)
   (let loop ()
     (when (void? return-status)
       (let ([line (read-line)])
         (unless (eof-object? line)
           (send new-menu receive line)
           (loop)))))
-  return-status)
+  (and return-status new-config))
   ;(if (eq? #t return-status) new-config #f))
 
 
 (module+ main
   ;  (define-values (s h) (config->string (load-rackmud-settings)))
-  (new-setup (load-rackmud-settings) default-config-name))
+  (rackmud-configure (load-rackmud-settings)))
   ; (display s)
   

@@ -44,4 +44,4 @@
 
 (define (rackmud-db-version conn)
   (with-handlers ([exn:fail:sql? (lambda (e) #f)])
-    (query-value conn "select database-version from metadata;")))
+    (query-value conn "select val from metadata where id='database-version';")))
