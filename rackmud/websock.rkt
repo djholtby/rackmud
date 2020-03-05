@@ -1,7 +1,7 @@
 #lang racket/base
 
 (require racket/class racket/port racket/bytes racket/list racket/match racket/string racket/set json net/rfc6455)
-(require telnet/connection defconst telnet/mxp)
+(require telnet/connection telnet/mxp)
 
 (provide websock-terminal%)
 

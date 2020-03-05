@@ -1,6 +1,7 @@
 #lang info
 (define collection "rackmud")
 (define deps '("uuid"
+               "telnet"
                "base"
                "data-lib"
                "db-lib"

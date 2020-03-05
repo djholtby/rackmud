@@ -4,7 +4,7 @@
 (define pkg-name "rackmud")
 (define pkg-authors '(djholtby))
 (define version "0.01")
-(define deps '("defconst"
+(define deps '(
                "parser-tools-lib"
                "telnet"
                "uuid"
