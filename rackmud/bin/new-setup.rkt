@@ -13,7 +13,17 @@
 (define-runtime-path HERE ".")
 ;(define (make-rackmud-db-connection db-type db-port db-sock db-srv db-db db-user db-pass)
 
+(define (touch filename)
+  (unless (file-exists? filename)
+    (with-output-to-file filename void)))
 
+(define (pathstring->filename path)
+  (define-values [root filename must-be-dir?]
+    (if (path-string? path) (split-path path) (values #f #f #f)))
+  (cond [(not root) 'bad-path]
+        [(and (path? root) (not (directory-exists? root))) 'bad-dir]
+        [must-be-dir? 'invalid-file-name]
+        [else (path->string filename)]))
 
 (define (file->statements file)
   (map (lambda (s) (string-append s ";"))
@@ -117,6 +127,7 @@
   (define hint-text
     (cond [(not hint) ""]
           [(string? hint) (string->error-string hint)]
+          [(cons? hint) (first hint)]
           [else (error 'config-option "Bad hint for ~a (~a)" name hint)]))
   (hash-set! int->setting int name)
   (define line (format "~a) ~a = ~a" (padl (number->string int) 2)
@@ -153,6 +164,19 @@
 (define (config-issues cfg)
   (define out (open-output-string))
   (define error-flags (make-hasheq))
+
+
+  (define fn (pathstring->filename (hash-ref cfg 'filename default-config-name)))
+  (case fn
+    [(bad-path) (displayln "* config path is invalid" out)
+     (hash-set! error-flags 'filename "Bad Path")]
+    [(bad-dir) (displayln "* config path leads to invalid directory" out)
+     (hash-set! error-flags 'filename "Invalid Directory")]
+    [(invalid-file-name) (displayln "* config path is does not lead to a file" out)
+     (hash-set! error-flags 'filename "Invalid File Name")]
+    [else
+     (unless (string=? fn default-config-name)
+       (hash-set! error-flags 'filename '("\e[33;1m[Not Default]\e[0m")))])
   
   (match (hash-ref cfg 'database:type #f)
     [#f (displayln "* database type not set" out)
@@ -354,12 +378,16 @@
   (define filename (hash-ref config-table 'filename))
   (define-values (issues error-table)  (config-issues config-table))
   (fprintf out "===Configuration File Settings===\n")
+#|
   (let* ([int (box++ counter)]
          [line (format "~a) filename             = ~v" (padl (number->string int) 2) filename)])
     (display line out)
     (hash-set! int->setting int 'filename)
     (displayln (if (string=? filename default-config-name) "" (padl "\e[33;1m[Will require command line argument]\e[0m" (- terminal-width (string-length line)))) out))
+  |#
 
+  (config-option out 'filename counter int->setting config-table error-table)
+  
   (fprintf out "\n===Database Settings===\n")
   (display-database-settings config-table error-table out counter int->setting)
   
@@ -401,18 +429,6 @@
        [(pregexp #px"^\\s*(n(o|ah|ope)?)?\\s*$")
         (transmit eof)]
        [else 'start])]]
-   [confirm-name
-    [(if (string=? default-config-name (hash-ref (hash-ref vars 'config) 'filename))
-         'validate
-         (begin
-           (transmit (format "You have launched the server with a non-default config file '~a'.  Would you like to use this name for the new config file? (Answering 'no' will use the default [~a])\n"
-                             (hash-ref (hash-ref vars 'config) 'filename) default-config-name))
-           #f))]
-    [(define cfg (hash-ref vars 'config))
-     (match
-       [(pregexp #px"^\\s*y(a|eah|es)?\\s*$") 'validate]
-       [(pregexp #px"^\\s*(n(o|ah|ope)?)?\\s*$") (hash-set! cfg 'filename default-config-name) 'validate]
-       [else (transmit "Please answer Y or N only\n") #f])]]
    [confirm-settings
     [(define-values (msg action-map issues) (config->string (hash-ref vars 'config)))
      (hash-set! vars 'action-map action-map)
@@ -426,7 +442,7 @@
        (cond [change-settings change-settings]
              [(and (string=? (string-trim msg) "")
                    (string=? issues ""))
-              'confirm-name]
+              'validate]
              [(string=? (string-trim msg) "")
               (transmit "Cannot save configuration due to the following issue(s)\n\n\e[31;1m" issues "\e[0m")
               #f]
@@ -473,13 +489,23 @@
     [(define cfg (hash-ref vars 'config))
      (define type (hash-ref cfg 'database:type))
      (define tmsg (string-trim msg))
+     (define dpath (pathstring->filename tmsg))
      (cond [(string=? tmsg "") 'confirm-settings]
            [(not (eq? type 'sqlite3))
             (hash-set! cfg 'database:database tmsg)
             'confirm-settings]
-           [(and (path-string? tmsg) (file-exists? tmsg))
-            (hash-set! cfg 'database:database tmsg) 'confirm-settings]
+           [dpath
+            (hash-set! cfg 'database:database tmsg)
+            (if (file-exists? tmsg) 'confirm-settings 'create-sqlite3-file)]
            [(transmit "File not found!\n") 'database:database])]]
+   [create-sqlite3-file
+    [(transmit "sqlite3 file not found.  Create one now? (Y/N, or [enter] to reenter file name)\n") #f]
+    [(match (string-foldcase msg)
+       ["" 'database:database]
+       [(pregexp #px"^\\s*y(a|eah|es)?\\s*$") (touch (hash-ref (hash-ref vars 'config) 'database:database)) 'confirm-settings]
+       [(pregexp #px"^\\s*(n(o|ah|ope)?)?\\s*$") 'confirm-settings]
+       [else #f])]]
+   
    [database:username
     [(transmit "Enter database username, or press [Enter] to leave unchanged\n") #f]
     [(define cfg (hash-ref vars 'config))
@@ -690,18 +716,20 @@
                "]\e[0m\n") #f]
     [(define tmsg (string-trim msg))
      (define cfg (hash-ref vars 'config))
-     (define-values [root filename must-be-dir?]
-       (if (path-string? tmsg) (split-path tmsg) (values #f #f #f)))
+     (define filename (pathstring->filename tmsg))
      (cond [(string=? tmsg "") 'confirm-settings]
-           [(or must-be-dir? (and filename (directory-exists? tmsg)))
-            (transmit "configuration file must be a file, not a directory\n") #f]
-           [(eq? root 'relative)
-            (hash-set! cfg 'filename tmsg) 'confirm-settings]
-           [(and (path? root) (directory-exists? root))
-            (hash-set! cfg 'filename tmsg) 'confirm-settings]
-           [(path? root) (transmit (format "Directory ~v does not exist\n" root)) #f]
-           [else (transmit "Invalid filename") #f])]]
- ))   
+           [(eq? filename 'bad-path)
+            (transmit "bad path for configuration file\n") #f]
+           [(eq? filename 'bad-dir)
+            (transmit "bad directory for configuration file\n") #f]
+           [(eq? filename 'invalid-file-name)
+            (transmit "bad file name\n") #f]
+           [else
+            (unless (string=? default-config-name filename)
+              (transmit "This is not the default file name.  You'll need to use a flag each time you launch the server!\n"))
+            (hash-set! cfg 'filename tmsg)
+            'confirm-settings])]]
+ ))
 
 (define (rackmud-configure current-config #:start [start 'start])
   (define return-status (void))
@@ -718,8 +746,10 @@
 
   (define new-config (hash-copy current-config))
   (define vars (make-hasheq `((config . ,new-config))))
+
   
-  (define new-menu                                                                                                                                                                                                (new new-install-menu%
+  (define new-menu
+    (new new-install-menu%
          [transmit-func cli-transmit]
          [vars vars]))
   (send new-menu set-state! start)
@@ -729,7 +759,7 @@
         (unless (eof-object? line)
           (send new-menu receive line)
           (loop)))))
-  (and return-status new-config))
+  (and (eq? #t return-status) new-config))
   ;(if (eq? #t return-status) new-config #f))
 
 
