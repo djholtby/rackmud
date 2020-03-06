@@ -33,8 +33,6 @@
   (define build? (hash-ref cfg 'build #f))
   (when build?
     (define setup (dynamic-require (collection-file-path "setup.rkt" "setup") 'setup))
-;    (displayln (collection-path (symbol->string mudlib-collect)))
-;    (displayln mudlib/path)
     (exit
      (if 
       (setup #:collections `((,(symbol->string mudlib-collect))))
@@ -61,7 +59,7 @@
                               (hash-ref cfg 'ssl:certificate #f)
                               (hash-ref cfg 'ssl:private-key #f)
                               (port-number? https-port)))
-  
+
   (define telnet-encodings
     (and (or telnet-enabled? telnet-ssl-enabled?)
          ;; convert the encodings list from the config file into the names that (mostly) always work with iconv
@@ -78,14 +76,14 @@
   (set! t0 (current-inexact-milliseconds))
   ;; First, establish a DB connection so that the master object can be loaded
   (let ([db-type (hash-ref cfg 'database:type #f)]
-        [db-db (hash-ref cfg 'database:name #f)]
+        [db-db (hash-ref cfg 'database:database #f)]
         [db-user (hash-ref cfg 'database:username #f)]
         [db-pass (hash-ref cfg 'database:password #f)]
         [db-srv (hash-ref cfg 'database:server #f)]
         [db-port (hash-ref cfg 'database:port #f)]
         [db-sock (hash-ref cfg 'database:socket #f)])
     (when db-type
-      (database-setup (string->symbol db-type) db-port db-sock db-srv db-db db-user db-pass)))
+      (database-setup (if (string? db-type) (string->symbol db-type) db-type) db-port db-sock db-srv db-db db-user db-pass)))
   (printf "connected in ~vms\n" (round (inexact->exact (- (current-inexact-milliseconds) t0))))
   
   ;; Next, start the scheduler so events can be processed

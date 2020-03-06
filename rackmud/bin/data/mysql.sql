@@ -1,12 +1,12 @@
 CREATE TABLE classes (
-	cid INT,
+	cid INT NOT NULL AUTOINCREMENT,
 	classname text NOT NULL,
 	module text NOT NULL,
 	PRIMARY KEY (cid)
 );
 
 CREATE TABLE objects (
-	oid BIGINT UNIQUE AUTOINCREMENT,
+	oid BIGINT NOT NULL AUTOINCREMENT,
 	cid int NOT NULL REFERENCES classes,
 	created timestamp NOT NULL,
 	saved timestamp,

@@ -76,8 +76,8 @@
    (#:connection-close? boolean?
     #:listen-ip (or/c false/c string?)
     #:confirmation-channel (or/c false/c async-channel?)
-    #:http-port listen-port-number?
-    #:ssl-port listen-port-number?
+    #:http-port (or/c listen-port-number? #f)
+    #:ssl-port (or/c listen-port-number? #f)
     #:max-waiting exact-nonnegative-integer?
     #:http? boolean?
     #:ssl? boolean?

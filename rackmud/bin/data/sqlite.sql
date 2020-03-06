@@ -1,5 +1,5 @@
 CREATE TABLE classes (
-	cid INTEGER PRIMARY KEY,
+	cid INTEGER PRIMARY KEY AUTOINCREMENT,
 	classname text NOT NULL,
 	module text NOT NULL
 );
@@ -42,7 +42,7 @@ CREATE TABLE indexed_fields (
 );   
 
 CREATE TABLE logfile (
-  time NOT NULL,
+  time NOT NULL DEFAULT (DATETIME('now')), 
   level INTEGER NOT NULL,
   module text,
   description text,
