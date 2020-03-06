@@ -864,8 +864,8 @@ class-field-mutator
   (query-exec _dbc_ log-stmt
               (log-level->int level)
               (if module (if (string? module) module (format "~a" module)) sql-null)
-              (if code code sql-null)
-              description))
+              (or code sql-null)
+              (or description sql-null)))
               
 
 (define (database-disconnect!)
