@@ -24,7 +24,7 @@
          object-method-arity-includes?/rackmud field-names/rackmud object-info/rackmud with-method/rackmud dynamic-send/rackmud
          send/keyword-apply/rackmud send/apply/rackmud dynamic-get-field/rackmud dynamic-set-field!/rackmud field-bound?/rackmud
          class-field-accessor/rackmud class-field-mutator/rackmud
-)
+         )
 
          
 (provide database-setup database-disconnect database-find-indexed)
@@ -128,7 +128,8 @@
 
 
 (define (database-setup db-type db-port db-sock db-srv db-db db-user db-pass)
-  (set-database-connection! (make-rackmud-db-connection db-type db-port db-sock db-srv db-db db-user db-pass)))
+  (set-database-connection! db-type
+                            (make-rackmud-db-pool db-type db-port db-sock db-srv db-db db-user db-pass)))
    
 
 
@@ -688,151 +689,182 @@ class-field-mutator
             (set-lazy-ref-obj! lr o))
         o)))
 
-(define db/semaphore (make-semaphore 1))
 (define _dbc_ #f)
 
-(define class-load-stmt #f)
-(define object-load-stmt #f)
-(define get-classid-stmt #f)
-(define create-classid-stmt #f)
-(define delete-fields-stmt #f)
-(define delete-tags-stmt #f)
-(define save-object-stmt #f)
-(define new-object-stmt #f)
-(define save-tag-stmt #f)
-(define save-field-stmt #f)
-(define load-tags-stmt #f)
-(define load-fields-stmt #f)
-(define search-tags-stmt #f)
-(define search-index-stmt #f)
-(define get-singleton-stmt #f)
-(define new-singleton-stmt #f)
-(define log-stmt #f)
-(define new-token-stmt #f)
-(define verify-auth-stmt #f)
-(define tokens-for-oid-stmt #f)
-(define expire-token-stmt #f)
-(define expire-all-tokens-stmt #f)
+(define (dbsys->config dbsys)
+  (case (dbsystem-name dbsys)
+    [(postgresql) (values #t #t)]
+    [(mysql) (values #f #t)]
+    [(sqlite3) (values #f #f)]
+    [else (error "Unsupported DB System")]))
+
+(define object-load-stmt
+  (virtual-statement
+   (λ (dbsys) (case (dbsystem-name dbsys)
+                [(postgresql) "SELECT cid, created, saved, name, deleted, fields FROM objects WHERE oid = $1"]
+                [else "SELECT cid, created, saved, name, deleted, fields FROM objects WHERE oid = ?"]))))
+
+(define class-load-stmt
+  (virtual-statement
+   (λ (dbsys) (case (dbsystem-name dbsys)
+                [(postgresql) "SELECT classname, module FROM classes WHERE cid = $1"]
+                [else "SELECT classname, module FROM classes WHERE cid = ?"]))))
+                              
+(define get-classid-stmt
+  (virtual-statement
+   (λ (dbsys) (case (dbsystem-name dbsys)
+                [(postgresql) "SELECT cid FROM classes WHERE classname = $1 AND module = $2"]
+                [else "SELECT cid FROM classes WHERE classname = ? AND module = ?"]))))
+
+(define create-classid-stmt
+  (virtual-statement
+   (λ (dbsys) (case (dbsystem-name dbsys)
+                [(postgresql) "INSERT INTO classes (classname,module) VALUES ($1 , $2) RETURNING cid"]
+                [else "INSERT INTO classes (classname,module) VALUES (? , ?)"]))))
+    
+(define delete-fields-stmt
+  (virtual-statement
+   (λ (dbsys) (case (dbsystem-name dbsys)
+                [(postgresql) "DELETE FROM indexed_fields WHERE oid = $1"]
+                [else "DELETE FROM indexed_fields WHERE oid = ?"]))))
+(define delete-tags-stmt
+  (virtual-statement
+   (λ (dbsys) (case (dbsystem-name dbsys)
+                [(postgresql) "DELETE FROM tags WHERE oid = $1"]
+                [else "DELETE FROM tags WHERE oid = ?"]))))
+(define new-object-stmt
+  (virtual-statement
+   (λ (dbsys) (case (dbsystem-name dbsys)
+                [(postgresql) "INSERT INTO objects (cid, created, name, deleted) VALUES ($1, $2, $3, false) RETURNING oid"]
+                [(mysql) "INSERT INTO objects (cid, created, name, deleted) VALUES (?, ?, ?, false)"]
+                [else "INSERT INTO objects (cid, created, name, deleted) VALUES (?, ?, ?, 0)"]))))
+
+
+
+(define save-object-stmt
+  (virtual-statement
+   (λ (dbsys) (case (dbsystem-name dbsys)
+                [(postgresql) "UPDATE objects SET name=$1, saved=$2, fields=$3 WHERE oid = $4"]
+                [else "UPDATE objects SET name=?, saved=?, fields=? WHERE oid = ?"]))))
+
+(define save-tag-stmt
+  (virtual-statement
+   (λ (dbsys) (case (dbsystem-name dbsys)
+                [(postgresql) "INSERT INTO tags (oid, category, tag) values (~a, ~a, ~a)"]
+                [else "INSERT INTO tags (oid, category, tag) values (?, ?, ?)"]))))
+
+(define save-field-stmt
+  (virtual-statement
+   (λ (dbsys) (case (dbsystem-name dbsys)
+                [(postgresql) "INSERT INTO indexed_fields (oid, field, value) values ($1, $2, $3)"]
+                [else "INSERT INTO indexed_fields (oid, field, value) values (?, ?, ?)"]))))
+
+(define load-tags-stmt
+  (virtual-statement
+   (λ (dbsys) (case (dbsystem-name dbsys)
+                [(postgresql) "SELECT category, tag FROM tags WHERE oid = $1"]
+                [else "SELECT category, tag FROM tags WHERE oid = ?"]))))
+
+;; HERE
+
+(define load-fields-stmt
+  (virtual-statement
+   (λ (dbsys) (case (dbsystem-name dbsys)
+                [(postgresql)  "SELECT field, value FROM indexed_fields WHERE oid = $1"]
+                [else  "SELECT field, value FROM indexed_fields WHERE oid = ?"]))))
+
+(define search-tags-stmt
+  (virtual-statement
+   (λ (dbsys) (case (dbsystem-name dbsys)
+                [(postgresql) "SELECT oid FROM tags WHERE category = $1 AND tag = $2"]
+                [else "SELECT oid FROM tags WHERE category = ? AND tag = ?"]))))
+
+(define search-index-stmt
+  (virtual-statement
+   (λ (dbsys) (case (dbsystem-name dbsys)
+                [(postgresql) "SELECT oid FROM indexed_fields WHERE field = $1 AND value = $2"]
+                [else "SELECT oid FROM indexed_fields WHERE field = ? AND value = ?"]))))
+                                             
+(define get-singleton-stmt
+  (virtual-statement
+   (λ (dbsys) (case (dbsystem-name dbsys)
+                [(postgresql) "SELECT oid FROM singletons WHERE cid = $1"]
+                [else "SELECT oid FROM singletons WHERE cid = ?"]))))
+
+(define new-singleton-stmt
+  (virtual-statement
+   (λ (dbsys) (case (dbsystem-name dbsys)
+                [(postgresql) "INSERT INTO singletons (oid, cid) values ($1, $2)"]
+                [else "INSERT INTO singletons (oid, cid) values (?, ?)"]))))
+                                                
+(define log-stmt
+  (virtual-statement
+   (λ (dbsys) (case (dbsystem-name dbsys)
+                [(postgresql) "INSERT INTO logfile (level, module, description, backtrace) values ($1, $2, $3, $4)"]
+                [else "INSERT INTO logfile (level, module, description, backtrace) values (?, ?, ?, ?)"]))))
+
+(define new-token-stmt
+  (virtual-statement
+   (λ (dbsys) (case (dbsystem-name dbsys)
+                [(postgresql) "INSERT INTO auth (seq, token, oid, expires) values ($1, $2, $3, $4)"]
+                [else "INSERT INTO auth (seq, token, oid, expires) values (?, ?, ?, ?)"]))))
+
+(define verify-auth-stmt
+  (virtual-statement
+   (λ (dbsys) (case (dbsystem-name dbsys)
+                [(postgresql) "SELECT token, expires FROM auth WHERE seq = $1 and oid = $2"]
+                [else "SELECT token, expires FROM auth WHERE seq = ? and oid = ?"]))))
+
+(define tokens-for-oid-stmt
+  (virtual-statement
+   (λ (dbsys) (case (dbsystem-name dbsys)
+                [(postgresql) "SELECT seq FROM auth where oid = $1"]
+                [else "SELECT seq FROM auth where oid = ?"]))))
+
+(define expire-token-stmt
+  (virtual-statement
+   (λ (dbsys) (case (dbsystem-name dbsys)
+                [(postgresql)  "DELETE FROM auth WHERE seq = $1"]
+                [else "DELETE FROM auth WHERE seq = ?"]))))
+
+(define expire-all-tokens-stmt
+  (virtual-statement
+   (λ (dbsys) (case (dbsystem-name dbsys)
+                [(postgresql)  "DELETE FROM auth WHERE oid = $1"]
+                [else "DELETE FROM auth WHERE oid = ?"]))))
+
 (define logger-thread #f)
 
 
 (define (database-connected?)
-  (and (connection? _dbc_) (connected? _dbc_)))
+  (connection? _dbc_))
 
 (define (database-disconnect)
   (when (connection? _dbc_)
     (disconnect _dbc_)
     (set! _dbc_ #f)))
 
-(define (set-database-connection! conn)
-  (unless (connection? conn) (raise-argument-error 'set-database-connection! "connection?" conn))
-  (if (symbol=? (dbsystem-name (connection-dbsystem conn)) 'sqlite3) ;; TODO, does anything else not support timestamp???
+(define (set-database-connection! system pool)
+  (unless (connection? pool) (raise-argument-error 'set-database-connection! "connection?" pool))
+  (if (symbol=? system 'sqlite3) ;; TODO, does anything else not support timestamp???
       (set! database-date-supported #f)
       (set! database-date-supported #t))
   
-  (local ([define is-postgres? (symbol=? 'postgresql (dbsystem-name (connection-dbsystem conn)))]
-          [define has-bool? (memq (dbsystem-name (connection-dbsystem conn)) '(postgresql mysql odbc))])
-    (when _dbc_ (disconnect _dbc_))
-    (set! _dbc_ conn)
-    (set! object-load-stmt (prepare conn (format "SELECT cid, created, saved, name, deleted, fields FROM objects WHERE oid = ~a"
-                                                 (if is-postgres? "$1" "?"))))
-    (set! class-load-stmt (prepare conn (format "SELECT classname, module FROM classes WHERE cid = ~a"
-                                                (if is-postgres? "$1" "?"))))
-    (set! get-classid-stmt (prepare conn (format "SELECT cid FROM classes WHERE classname = ~a AND module = ~a"
-                                                 (if is-postgres? "$1" "?")
-                                                 (if is-postgres? "$2" "?"))))
-
-    (set! create-classid-stmt (prepare conn (format "INSERT INTO classes (classname,module) VALUES (~a , ~a)"
-                                                    (if is-postgres? "$1" "?")
-                                                    (if is-postgres? "$2" "?"))))
+  (when _dbc_ (disconnect _dbc_))
+  (set! _dbc_ pool)
     
-    (set! delete-fields-stmt (prepare conn (format "DELETE FROM indexed_fields WHERE oid = ~a"
-                                                   (if is-postgres? "$1" "?"))))
-    (set! delete-tags-stmt (prepare conn (format "DELETE FROM tags WHERE oid = ~a"
-                                                 (if is-postgres? "$1" "?"))))
-
-    (set! new-object-stmt (prepare conn (format "INSERT INTO objects (cid, created, name, deleted) VALUES (~a, ~a, ~a, ~a) ~a"
-                                                (if is-postgres? "$1" "?")
-                                                (if is-postgres? "$2" "?")
-                                                (if is-postgres? "$3" "?")
-                                                (if has-bool? "false" "0")
-                                                (if is-postgres? "RETURNING oid" ""))))
-
-    (set! save-object-stmt (prepare conn (format "UPDATE objects SET name=~a, saved=~a, fields=~a WHERE oid = ~a"
-                                                 (if is-postgres? "$1" "?")
-                                                 (if is-postgres? "$2" "?")
-                                                 (if is-postgres? "$3" "?")
-                                                 (if is-postgres? "$4" "?"))))
-
-    (set! save-tag-stmt (prepare conn (format "INSERT INTO tags (oid, category, tag) values (~a, ~a, ~a)"
-                                              (if is-postgres? "$1" "?")
-                                              (if is-postgres? "$2" "?")
-                                              (if is-postgres? "$3" "?"))))
-
-    (set! save-field-stmt (prepare conn (format "INSERT INTO indexed_fields (oid, field, value) values (~a, ~a, ~a)"
-                                                (if is-postgres? "$1" "?")
-                                                (if is-postgres? "$2" "?")
-                                                (if is-postgres? "$3" "?"))))
-
-    (set! load-tags-stmt (prepare conn (format "SELECT category, tag FROM tags WHERE oid = ~a"
-                                               (if is-postgres? "$1" "?"))))
-
-    (set! load-fields-stmt (prepare conn (format "SELECT field, value FROM indexed_fields WHERE oid = ~a"
-                                                 (if is-postgres? "$1" "?"))))
-
-    (set! search-tags-stmt (prepare conn (format "SELECT oid FROM tags WHERE category = ~a AND tag = ~a"
-                                                 (if is-postgres? "$1" "?")
-                                                 (if is-postgres? "$2" "?"))))
-
-    (set! search-index-stmt (prepare conn (format "SELECT oid FROM indexed_fields WHERE field = ~a AND value = ~a"
-                                                  (if is-postgres? "$1" "?")
-                                                  (if is-postgres? "$2" "?"))))
-
-                                              
-    (set! get-singleton-stmt (prepare conn (format "SELECT oid FROM singletons WHERE cid = ~a"
-                                                   (if is-postgres? "$1" "?"))))
-
-    (set! new-singleton-stmt (prepare conn (format "INSERT INTO singletons (oid, cid) values (~a, ~a)"
-                                                   (if is-postgres? "$1" "?")
-                                                   (if is-postgres? "$2" "?"))))
-                                                
-    (set! log-stmt (prepare conn (format "INSERT INTO logfile (level, module, description, backtrace) values (~a, ~a, ~a, ~a)"
-                                         (if is-postgres? "$1" "?")
-                                         (if is-postgres? "$2" "?")
-                                         (if is-postgres? "$3" "?")
-                                         (if is-postgres? "$4" "?"))))
-
-    (set! new-token-stmt  (prepare conn (format "INSERT INTO auth (seq, token, oid, expires) values (~a, ~a, ~a, ~a)"
-                                                (if is-postgres? "$1" "?")
-                                                (if is-postgres? "$2" "?")
-                                                (if is-postgres? "$3" "?")
-                                                (if is-postgres? "$4" "?")
-                                                )))
-
-    (set! verify-auth-stmt (prepare conn (format "SELECT token, expires FROM auth WHERE seq = ~a and oid = ~a"
-                                                 (if is-postgres? "$1" "?")
-                                                 (if is-postgres? "$2" "?"))))
-
-    (set! tokens-for-oid-stmt (prepare conn (format "SELECT seq FROM auth where oid = ~a"
-                                                    (if is-postgres? "$1" "?"))))
-
-    (set! expire-token-stmt (prepare conn (format "DELETE FROM auth WHERE seq = ~a"
-                                                  (if is-postgres? "$1" "?"))))
-
-    (set! expire-all-tokens-stmt (prepare conn (format "DELETE FROM auth WHERE oid = ~a"
-                                                       (if is-postgres? "$1" "?"))))
     
-    (when (thread? logger-thread)
-      (kill-thread logger-thread))
+  (when (thread? logger-thread)
+    (kill-thread logger-thread))
 
-    (set! logger-thread
-          (thread
-           (λ ()
-             (let loop ()
-               (match (sync rackmud-log-rec)
-                 [(vector level msg data topic)
-                  (when (string? msg) (database-log level (or topic "racket") msg (backtrace data)))])
-               (loop)))))))
+  (set! logger-thread
+        (thread
+         (λ ()
+           (let loop ()
+             (match (sync rackmud-log-rec)
+               [(vector level msg data topic)
+                (when (string? msg) (database-log level (or topic "racket") msg (backtrace data)))])
+             (loop))))))
 
 (define (log-level->int ll)
   (or (index-of '(none fatal error warning info debug) ll eq?) 0))
@@ -917,15 +949,16 @@ database-get-cid! : Symbol Path -> Nat
 (define (database-get-object id)
   (unless (database-connected?) (error "database not connected"))
   ;"SELECT cid, created, saved, name, deleted, fields FROM objects WHERE oid = ~a"
-  (semaphore-wait db/semaphore)
+    (start-transaction _dbc_ #:isolation 'read-committed)
   (define obj (query-maybe-row _dbc_ object-load-stmt id))
-  (define tags (query-rows _dbc_ load-tags-stmt id))
-  (define indexed-fields (make-hasheq (map (λ (v)
-                                             (cons (string->symbol (vector-ref v 0))
-                                                   (parameterize ([current-readtable void-reader]) (read (open-input-bytes (vector-ref v 1))))))
-                                           (query-rows _dbc_ load-fields-stmt id))))
-  (semaphore-post db/semaphore)
-  
+  (define tags (and obj (query-rows _dbc_ load-tags-stmt id)))
+  (define indexed-fields (and obj (make-hasheq (map (λ (v)
+                                                      (cons (string->symbol (vector-ref v 0))
+                                                            (parameterize ([current-readtable void-reader])
+                                                              (read (open-input-bytes (vector-ref v 1))))))
+                                                    (query-rows _dbc_ load-fields-stmt id)))))
+  (commit-transaction _dbc_)
+    
   (if (and obj (or (false? (vector-ref obj 4))
                    (zero? (vector-ref obj 4))))
       (local [(define classinfo/v (query-row _dbc_ class-load-stmt (vector-ref obj 0)))
@@ -1009,8 +1042,14 @@ database-get-cid! : Symbol Path -> Nat
              [tag (in-set tags)])
         (query-exec _dbc_ save-tag-stmt oid category tag))
       ; That's all, folks
-      (commit-transaction _dbc_)
-      #t)))
+      (with-handlers ([exn:fail:sql?
+                       (λ (e)
+                         (match (exn:fail:sql-sqlstate e)
+                           [#rx"^40...$" (database-save-object o)]
+                           ['done (database-save-object o)]
+                           [else (raise e)]))])
+        (commit-transaction _dbc_)
+        #t))))
 
 (define-syntax (get-singleton stx)
   (syntax-case stx()
@@ -1256,7 +1295,8 @@ database-get-cid! : Symbol Path -> Nat
                 (text-default t))
            (text-default t)]
           [(and (database-connected?) (text-id t))
-           (or (and (symbol->mib enc) (query-maybe-value _dbc_ get-text-stmt (text-id t) (string-foldcase (symbol->string lang)) (symbol->mib enc)))
+           (or (and (symbol->mib enc) (query-maybe-value _dbc_ get-text-stmt (text-id t) (string-foldcase (symbol->string lang))
+                    (symbol->mib enc)))
                (query-maybe-value _dbc_ get-text-stmt (text-id t) (string-foldcase (symbol->string lang)) (symbol->mib 'UTF-8))
                (query-maybe-value _dbc_ get-text-stmt (text-id t) (string-foldcase (symbol->string lang)) (symbol->mib 'ASCII))
                (text-default t))]

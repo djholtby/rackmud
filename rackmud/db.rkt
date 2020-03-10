@@ -2,7 +2,11 @@
 
 (require db)
 
-(provide make-rackmud-db-connection rackmud-db-version)
+(provide make-rackmud-db-connection make-rackmud-db-pool rackmud-db-version)
+
+(define (make-rackmud-db-pool db-type db-port db-sock db-srv db-db db-user db-pass)
+  (virtual-connection (connection-pool
+                       (λ () (make-rackmud-db-connection db-type db-port db-sock db-srv db-db db-user db-pass)))))
 
 (define (make-rackmud-db-connection db-type db-port db-sock db-srv db-db db-user db-pass)
   (case db-type
