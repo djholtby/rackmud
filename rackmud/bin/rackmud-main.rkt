@@ -177,7 +177,7 @@
                    (let loop ()
                      (define-values (in out) (tcp-accept ssl-serv))
                      (define-values (lip ip) (tcp-addresses in))
-                     (define-values (sin sout) (ports->ssl-ports in out #:mode 'accept #:context ssl-ctxt #:close-original? #t #:shutdown-on-close? #t))
+                     (define-values (sin sout) (ports->ssl-ports in out #:mode 'accept #:context ssl-ctxt #:close-original? #t #:shutdown-on-close? #f))
                      (add-telnet-user sin sout ip #t)
                      (loop))))))
 
