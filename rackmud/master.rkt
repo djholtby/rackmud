@@ -283,12 +283,7 @@ Main Loop
   (displayln "Stopped webserver")
   (for-each kill-thread thread-pool)
   (set! thread-pool #f)
-  (semaphore-wait object-table/semaphore)
-  (hash-for-each object-table
-                 (λ (oid obj)
-                   (let ([o (weak-box-value obj)])
-                     (when o (save-object o)))))
-  (semaphore-post object-table/semaphore)
+  (save-all-objects)
   (displayln "Saved cached objects")
   (database-disconnect)
   (displayln "Closed database connection"))

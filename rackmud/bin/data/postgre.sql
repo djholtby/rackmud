@@ -8,6 +8,7 @@ CREATE TABLE classes (
 CREATE TABLE objects (
 	oid BIGSERIAL UNIQUE ,
 	cid int NOT NULL REFERENCES classes,
+ 	name text NOT NULL DEFAULT 'object',
 	created timestamp NOT NULL,
 	saved timestamp,
 	deleted bool NOT NULL default false,

@@ -18,7 +18,7 @@
 
 (provide temp-object%)
 
-(provide object-table object-table/semaphore saved-object=? lazy-ref lazy-ref? touch! get-object oref save-object get-singleton new/rackmud
+(provide save-all-objects saved-object=? lazy-ref lazy-ref? touch! get-object oref save-object get-singleton new/rackmud
          instantiate/rackmud make-object/rackmud send/rackmud send*/rackmud get-field/rackmud set-field!/rackmud is-a?/rackmud is-a?/c/rackmud
          object?/rackmud object=?/rackmud object-or-false=?/rackmud object->vector/rackmud object-interface/rackmud
          object-method-arity-includes?/rackmud field-names/rackmud object-info/rackmud with-method/rackmud dynamic-send/rackmud
@@ -164,9 +164,30 @@
    (define hash2-proc (lambda (l hash-code) (hash-code (lazy-ref-id l))))])
 
 (define (oref o [weak? #f])
-  (unless (is-a? o saved-object%)
-    (raise-argument-error 'oref "(is-a?/c saved-object%)" o))
-  ((if weak? lazy-ref:weak lazy-ref) (get-field id o) (if weak? (make-weak-box o) o)))
+  (cond [(lazy-ref:weak? o)
+         (if weak? o (lazy-ref (lazy-ref-id o) (weak-box-value (lazy-ref-obj o))))]
+        [(lazy-ref? o)
+         (if weak? (lazy-ref:weak (lazy-ref-id o)
+                                  (make-weak-box (lazy-ref-obj o))) o)]
+        [(and (box? o) (is-a? (unbox o) saved-object%))
+         (if weak?
+             (lazy-ref:weak (get-field id (unbox o))
+                            (make-weak-box o))
+             (lazy-ref (get-field id (unbox o)) o))]
+        [(is-a? o saved-object%)
+
+        (let [(id (get-field id o))
+              (orec (make-object-record o))]
+          (semaphore-wait object-table/semaphore)
+          (hash-set! object-table id orec)
+          (semaphore-post object-table/semaphore)
+          (if weak?
+              (lazy-ref:weak id (object-record-obj orec))
+              (lazy-ref id (weak-box-value (object-record-obj orec)))))]
+        [else #f]))
+             
+             
+
 
 (define (saved-object=? a b)
   (let ([a-id (if (lazy-ref? a) (lazy-ref-id a) (get-field id a))]
@@ -640,17 +661,31 @@ class-field-mutator
       (->posix d)))
   
 
+(struct object-record (obj holds semaphore))
+(define (make-object-record o)
+  (object-record (make-weak-box (box o)) (mutable-seteq) (make-semaphore 1)))
+
+(define null-record (object-record (make-weak-box #f) #f #f))
+
 (define object-table/semaphore (make-semaphore 1))
 (define object-table (make-hasheqv empty))
 
+(define (save-all-objects)
+  (semaphore-wait object-table/semaphore)
+  (hash-for-each object-table
+                 (λ (oid obj)
+                   (let ([o (weak-box-value (object-record-obj obj))])
+                     (when o (save-object (unbox o))))))
+  (semaphore-post object-table/semaphore))
+
 ;; (get-object id) produces the object with the ID id, or #f if none is currently loaded
-;; get-object: Lazy-Ref -> (U (Instance Mud-Object%) #f)
+;; get-object: Lazy-Ref -> (U (Box (Instance Mud-Object%)) #f)
 
 (define (get-object id)
   (semaphore-wait object-table/semaphore)
-  (define o (hash-ref object-table id #f))
+  (define o (object-record-obj (hash-ref object-table id null-record)))
   (begin0
-    (if (and o (weak-box-value o))
+    (if (and o (box? (weak-box-value o)))
         (weak-box-value o)
         (if o (begin
                 (hash-remove! object-table id)
@@ -680,14 +715,14 @@ class-field-mutator
   (unless (lazy-ref? lr) (raise-argument-error 'lazy-deref "lazy-ref?" lr))
   (define id (lazy-ref-id lr))
   (define obj (lazy-ref-obj lr))
-  (when(and obj (lazy-ref:weak? lr))
+  (when (and obj (lazy-ref:weak? lr))
     (set! obj (weak-box-value obj)))
-  (if obj obj
-      (let ([o (or (get-object id) (database-load id))])
+  (if obj (unbox obj)
+      (let ([o (or (get-object id) (database-get-object id))])
         (if (lazy-ref:weak? lr)
             (set-lazy-ref-obj! lr (make-weak-box o))
             (set-lazy-ref-obj! lr o))
-        o)))
+        (unbox o))))
 
 (define _dbc_ #f)
 
@@ -906,18 +941,6 @@ class-field-mutator
     (set! _dbc_ #f)))
 
 
-;(read (open-input-string (gzip/bytes (bytes->string/utf-8 (_db_load id)))))))
-
-(define (database-load id)
-  (define db-val (database-get-object id))
-  (when db-val
-    (semaphore-wait object-table/semaphore)
-    (hash-set! object-table id (make-weak-box db-val))
-    (semaphore-post object-table/semaphore))
-  db-val)
-        
-
-
 
 (define cid-map (make-hash))
 
@@ -993,23 +1016,26 @@ database-get-cid! : Symbol Path -> Nat
                 (hash-set! new-object/tags category (mutable-seteq tag)))))
                 
         (send new-object on-load)
+        (define orec (make-object-record new-object))
         (semaphore-wait object-table/semaphore)
-        (hash-set! object-table id (make-weak-box new-object))
+        (hash-set! object-table id orec)
         (semaphore-post object-table/semaphore)
-        new-object)
+        (weak-box-value (object-record-obj orec)))
       #f))
   
 
 (define (save-object oref)
   (unless (or (object? oref) (lazy-ref? oref))
     (raise-argument-error 'save-object "(or/c object? lazy-ref?)" oref))
-  (define o (if (lazy-ref? oref) (get-object (lazy-ref-id oref)) oref))
+  (define o (if (lazy-ref? oref) (lazy-deref/no-keepalive oref) oref))
   (if o (database-save-object o) #f))
 
 ;; database-save-object: (InstanceOf MudObject%) -> Bool
 
 (define (database-save-object o)
   (unless (database-connected?) (error "database not connected"))
+  (unless (is-a? o saved-object%)
+    (raise-argument-error 'database-save-object "(is-a?/c saved-object%)" o))
   (let-values ([(oid) (get-field id o)]
                [(name) (get-field name o)]
                [(indexed-fields saved old-saved fields)
@@ -1064,7 +1090,7 @@ database-get-cid! : Symbol Path -> Nat
                (begin
                  (database-new-object o)
                  (query-exec _dbc_ new-singleton-stmt (get-field id o) cid)
-                 (lazy-ref (get-field id o) o)))))]))
+                 (oref o)))))]))
 
 #|(define-syntax (is-a?/rackmud stx)
   (syntax-case stx ()
@@ -1225,6 +1251,8 @@ database-get-cid! : Symbol Path -> Nat
 
 
 (define (database-new-object o)
+  (unless (is-a? o saved-object%)
+    (raise-argument-error 'database-new-object "(is-a?/c saved-object%)" o))
   (define cid (send o get-cid))
   (define name (get-field name o))
   (define created (get-field created o))
@@ -1241,10 +1269,11 @@ database-get-cid! : Symbol Path -> Nat
   
   (send o on-load)
   (database-save-object o)
+  (define orec (make-object-record o))
   (semaphore-wait object-table/semaphore)
-  (hash-set! object-table (get-field id o) (make-weak-box o))
+  (hash-set! object-table (get-field id o) orec)
   (semaphore-post object-table/semaphore)
-  (oref o))
+  (lazy-ref (get-field id o) orec))
 
 #|||||||||||||||||||||||||||||||||||||||||||
 
