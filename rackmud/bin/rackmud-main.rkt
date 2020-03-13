@@ -35,7 +35,7 @@
     (define setup (dynamic-require (collection-file-path "setup.rkt" "setup") 'setup))
     (exit
      (if 
-      (setup #:collections `((,(symbol->string mudlib-collect))))
+      (setup #:jobs 1 #:collections `((,(symbol->string mudlib-collect))))
       0 ; success
       1 ; failure
       )))
