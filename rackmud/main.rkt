@@ -98,7 +98,6 @@
              field-names/rackmud
              object-info/rackmud
 
-             with-method/rackmud
              dynamic-send/rackmud
              send/keyword-apply/rackmud
              send/apply/rackmud
@@ -128,7 +127,6 @@
   [object-method-arity-includes?/rackmud object-method-arity-includes?]
   [field-names/rackmud field-names]
   [object-info/rackmud object-info]
-  [with-method/rackmud with-method]
   [dynamic-send/rackmud dynamic-send]
   [send/keyword-apply/rackmud send/keyword-apply]
   [send/apply/rackmud send/apply]

@@ -182,10 +182,12 @@
                      (loop))))))
 
 
+
   (define (reload-certificates!)
     (define certificate (hash-ref cfg 'ssl:certificate #f))
     (define private-key (hash-ref cfg 'ssl:private-key #f))
     (when (and private-key certificate)
+      (log-info "SSL Certificate Changed.  Reloading")
       (when https-enabled?
         (update-certs certificate private-key))
       (when ssl-ctxt
@@ -214,11 +216,22 @@
      (hash-ref cfg 'ssl:certificate #f)
      (hash-ref cfg 'ssl:private-key #f)))
 
+  (define cert-thread
+    (and (or https-enabled? ssl-ctxt)
+         (thread (lambda ()
+                   (let ([cert-evt (filesystem-change-evt (hash-ref cfg 'ssl:certificate))]
+                         [pkey-evt (filesystem-change-evt (hash-ref cfg 'ssl:private-key))])
+                     (let loop ()
+                       (sync cert-evt pkey-evt)
+                       (sleep 1/10) ; just in case there's a delay between on changing and the other 
+                       (reload-certificates!)))))))
+
   (printf "started in ~vms\n" (round (inexact->exact (- (current-inexact-milliseconds) t0))))
 
   (define shutdown-semaphore (make-semaphore 0))
   (define (rackmud-shutdown!)
     (displayln "Shutting down...")
+    (when cert-thread (kill-thread cert-thread))
     (when telnet-thread (kill-thread telnet-thread))
     (when telnet-serv (tcp-close telnet-serv))
     (when ssl-thread (kill-thread ssl-thread))

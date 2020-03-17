@@ -21,10 +21,9 @@
 (provide save-all-objects saved-object=? lazy-ref lazy-ref? touch! get-object oref save-object get-singleton new/rackmud
          instantiate/rackmud make-object/rackmud send/rackmud send*/rackmud get-field/rackmud set-field!/rackmud is-a?/rackmud is-a?/c/rackmud
          object?/rackmud object=?/rackmud object-or-false=?/rackmud object->vector/rackmud object-interface/rackmud
-         object-method-arity-includes?/rackmud field-names/rackmud object-info/rackmud with-method/rackmud dynamic-send/rackmud
+         object-method-arity-includes?/rackmud field-names/rackmud object-info/rackmud dynamic-send/rackmud
          send/keyword-apply/rackmud send/apply/rackmud dynamic-get-field/rackmud dynamic-set-field!/rackmud field-bound?/rackmud
-         class-field-accessor/rackmud class-field-mutator/rackmud
-         )
+         class-field-accessor/rackmud class-field-mutator/rackmud)
 
          
 (provide database-setup database-disconnect database-find-indexed)
@@ -123,6 +122,23 @@
     (cond [(path? mpath) (find-relative-path lib-path mpath)]
           [(cons? mpath)  (cons (find-relative-path lib-path (car mpath)) (cdr mpath))])))
 
+(define save/k (generate-member-key))
+(define save-index/k (generate-member-key))
+(define load/k (generate-member-key))
+(define set-id!/k (generate-member-key))
+(define copy-live-state/k (generate-member-key))
+(define load-live-state/k (generate-member-key))
+(define get-cid/k (generate-member-key))
+
+
+(define-member-name save save/k)
+(define-member-name save-index save-index/k)
+(define-member-name load load/k)
+(define-member-name set-id! set-id!/k)
+(define-member-name copy-live-state copy-live-state/k)
+(define-member-name load-live-state load-live-state/k)
+(define-member-name get-cid get-cid/k)
+  
 
 
 
@@ -171,12 +187,12 @@
                                   (make-weak-box (lazy-ref-obj o))) o)]
         [(and (box? o) (is-a? (unbox o) saved-object%))
          (if weak?
-             (lazy-ref:weak (get-field id (unbox o))
+             (lazy-ref:weak (send (unbox o) get-id)
                             (make-weak-box o))
-             (lazy-ref (get-field id (unbox o)) o))]
+             (lazy-ref (send (unbox o) get-id) o))]
         [(is-a? o saved-object%)
 
-        (let [(id (get-field id o))
+        (let [(id (send o get-id))
               (orec (make-object-record o))]
           (semaphore-wait object-table/semaphore)
           (hash-set! object-table id orec)
@@ -186,13 +202,50 @@
               (lazy-ref id (weak-box-value (object-record-obj orec)))))]
         [else #f]))
              
-             
+(struct object-record (obj holds semaphore [wants-reload? #:mutable]))
+(define (make-object-record o)
+  (object-record (make-weak-box (box o)) (mutable-seteq) (make-semaphore 1) #f))
+(define null-record (object-record (make-weak-box #f) #f #f #f))
+
+(define object-reload-thread
+  (thread
+   (λ ()
+     (let loop ()
+       (let* ([orec (thread-receive)]
+              [object-box (weak-box-value (object-record-obj orec))]
+              [old-object (unbox object-box)]
+              [new-object (hot-reload old-object)])
+         (set-box! object-box new-object)
+         (set-object-record-wants-reload?! orec #f)
+         (semaphore-post (object-record-semaphore orec)))
+       (loop)))))
+         
+              
+         
+       
+
+
+(define (add-thread-to-object orec)
+  (semaphore-wait (object-record-semaphore orec))
+  (set-add! (object-record-holds orec) (current-thread)) 
+  (semaphore-post (object-record-semaphore orec)))
+
+(define (remove-thread-from-object orec)
+  (semaphore-wait (object-record-semaphore orec))
+  (set-remove! (object-record-holds orec) (current-thread))
+  (if (and (set-empty? (object-record-holds orec))
+             (object-record-wants-reload? orec))
+      (thread-send object-reload-thread orec)
+      (semaphore-post (object-record-semaphore orec))))
+ 
+
+
 
 
 (define (saved-object=? a b)
-  (let ([a-id (if (lazy-ref? a) (lazy-ref-id a) (get-field id a))]
+  (let ([a-id (if (lazy-ref? a) (lazy-ref-id a) (send a get-id))]
         [b-id (cond [(lazy-ref? b) (lazy-ref-id b)]
-                    [(and (object? b) (is-a? b saved-object%)) (get-field id b)]
+                    [(and (object? b) (is-a? b saved-object%)) (send b get-id)]
                     [else #f])])
     (and b-id (= a-id b-id))))
 
@@ -209,12 +262,13 @@
       (display (string-replace (get-output-string out) "class" "object") port))))
 
 
-(define saveable<%> (interface () save save-index load on-create on-load lock! unlock! updated))
+(define saveable<%> (interface () save save-index load on-create on-load updated))
 
 (define saved-object% (class* object% (writable<%> saveable<%> equal<%>)
                         (super-new)
-                        (init-field [id (void)]
-                                    [name "object"])
+                        (init [id (void)])
+                        (define _id_ id)
+                        (init-field  [name "object"])
                         (field      
                          ;; tags : (HashTable Symbol (Setof Symbol))
                          [last-access (now/moment/utc)]
@@ -235,28 +289,36 @@
 
 
                         (define/public (equal-to? other r?)
-                          (cond [(lazy-ref? other) (= id (lazy-ref-id other))]
-                                [(is-a? other saved-object%) (= id (get-field id other))]
+                          (cond [(lazy-ref? other) (= _id_ (lazy-ref-id other))]
+                                [(is-a? other saved-object%) (= _id_ (send other get-id))]
                                 [else #f]))
 
                         (define/public (equal-hash-code-of hash-code)
-                          (hash-code id))
+                          (hash-code _id_))
 
                         (define/public (equal-secondary-hash-code-of hash-code)
-                          (hash-code id))
+                          (hash-code _id_))
                         
                         (abstract get-cid)
-
+                        (define/public (get-id) _id_)
+                        (define (set-id! id) (set! _id_ id))
+                        
                         (define/public (on-create) (set-field! loaded this (now/moment/utc)))
                         (define/public (on-load) (set-field! loaded this (now/moment/utc)))
-                      
+
+                        (define/public (on-hot-reload) (set-field! loaded this (now/moment/utc)))
+                        (define/public (copy-live-state) (hasheq))
+                        (define/public (load-live-state flds) (void))
+                        
+
+                        
                         ; (load flds) initializes each field with the values in the given hash map
                         (define/public (load flds) (void))
 
                         (define/public (custom-write port)
                           (write #\# port)
                           (write #\{ port)
-                          (write id port)
+                          (write _id_ port)
                           (write #\} port))
                           
                         (define/public (custom-display port)
@@ -266,18 +328,29 @@
                         ;;  set-field! which already does this)
                         (define/public (updated)
                           (vbox-set! last-update (now/moment/utc)))
-
-                        (define lock-sema (make-semaphore 1))
-                        (define/public (lock!)
-                          (semaphore-wait lock-sema))
-
-                        (define/public (unlock!)
-                          (semaphore-post lock-sema))
-                        
                         
                         (will-register object-executor this database-save-object)))
 
 
+
+                  
+
+(define-for-syntax (do-object-action orig-stx the-thing/pre obj-stx the-thing/post)
+    (quasisyntax/loc orig-stx
+      (let ([o (unsyntax obj-stx)])
+        (if (lazy-ref? o)
+            (let* ([started? #f]
+                   [o2 (lazy-deref o)]
+                   [id (send o2 get-id)]
+                   [orec (hash-ref object-table id)])
+              (dynamic-wind
+                (lambda () (if started?
+                               (raise (make-exn:fail:contract:continuation))
+                               (add-thread-to-object orec)))
+                (lambda () (set! started? #t) ((unsyntax-splicing the-thing/pre) o2 (unsyntax-splicing the-thing/post)))
+                (lambda () (remove-thread-from-object orec))))
+            ((unsyntax-splicing the-thing/pre)  o (unsyntax-splicing the-thing/post) )))))
+#|
 (define-syntax (send/rackmud stx)
   (syntax-case stx ()
     [(_ obj-expr method-id arg ...)
@@ -290,12 +363,19 @@
        (send 
         (maybe-lazy-deref obj-expr)
         method-id arg ... . arglist))]))
+|#
+
+(define-syntax (send/rackmud stx)
+  (syntax-case stx ()
+    [(_ obj-expr method-id arg ...)
+     (do-object-action stx #'(send)  #'obj-expr #'(method-id arg ...))]
+    [(_ obj-expr method-id arg ... . arglist)
+     (do-object-action stx #'(send)  #'obj-expr #'(method-id arg ... . arglist))]))
 
 (define-syntax (send/apply/rackmud stx)
   (syntax-case stx ()
     [(_ obj-expr method-id arg ... arg-list-expr)
-     (syntax/loc stx
-       (send/apply (maybe-lazy-deref obj-expr) method-id arg ... arg-list-expr))]))
+     (do-object-action stx #'(send/apply) #'obj-expr #'(method-id arg ... arg-list-expr))]))
 
 
 (define-syntax (send/keyword-apply/rackmud stx)
@@ -303,22 +383,26 @@
     [(_ obj-expr method-id
         keyword-list-expr value-list-expr
         arg ... arg-list-expr)
-     (syntax/loc stx
-       (send/keyword-apply (maybe-lazy-deref obj-expr)
-                           keyword-list-expr value-list-expr
-                           arg ... arg-list-expr))]))
+     (do-object-action stx
+                       #'(send/keyword-apply)
+                       #'obj-expr
+                       #'(keyword-list-expr value-list-expr arg ... arg-list-expr))]))
 
 (define-syntax (dynamic-send/rackmud stx)
   (syntax-case stx ()
     [(_ obj-expr args ...)
-     (syntax/loc stx (dynamic-send (maybe-lazy-deref obj-expr) args ...))]))
+     (do-object-action stx
+                       #'(dynamic-send) #'obj-expr
+                       #'(args ...))]))
 
 (define-syntax (send*/rackmud stx)
   (syntax-case stx ()
     [(_ obj-expr msg0 msg1 ...)
-     (syntax/loc stx (send* (maybe-lazy-deref obj-expr) msg0 msg1 ...))]))
+     (do-object-action stx
+                       #'(send*) #'obj-expr
+                       #'(msg0 msg1 ...))]))
 
-(define-syntax (with-method/rackmud stx)
+#|(define-syntax (with-method/rackmud stx)
   (syntax-case stx ()
     [(_ ([id (obj-expr name)] ...) body0 body1 ...)
      (let ([ids (syntax->list (syntax (id ...)))]
@@ -333,6 +417,7 @@
                                                 objs
                                                 names)])
          (syntax/loc stx (with-method (binding-clause ...) body0 body1 ...))))]))                
+|#
 
 (define (dynamic-get-field/rackmud field-name obj)
   (dynamic-get-field field-name (maybe-lazy-deref obj)))
@@ -357,36 +442,19 @@
     [(_ class-expr field-id)
      (syntax/loc stx (let ([proc (class-field-mutator class-expr field-id)])
                        (lambda (o v)
-                         (proc (mybe-lazy-deref o) v))))]))
-
-#| TODO:
-with-methods
-dynamic-send
-send/keyword-apply
-send/apply
-dynamic-get-field
-dynamic-set-field!
-field-bound?
-class-field-accessor
-class-field-mutator
-|#
+                         (proc (maybe-lazy-deref o) v))))]))
 
 (define-syntax (get-field/rackmud stx)
   (syntax-case stx ()
     [(_ field-id obj-expr)
-     #'(get-field field-id (let [(o obj-expr)]
-                             (maybe-lazy-deref o)))]))
+     #'(get-field field-id (maybe-lazy-deref (maybe-lazy-deref obj-expr)))]))
 
 (define-syntax (set-field!/rackmud stx)
   (syntax-case stx ()
     [(_ field-id obj-expr value-expr)
-     #'(begin
-         (let [(o obj-expr)]
-           (set-field! field-id 
-                       (maybe-lazy-deref o)
-                       value-expr)
-           (when (lazy-ref? o)
-             (send (lazy-deref o) updated))))]))
+     #'(set-field! field-id 
+                       (maybe-lazy-deref obj-expr)
+                       value-expr)]))
 
 ;; (define-saved-class name super-expression mud-defn-or-expr ...) defines a saved-class descended from super-expression
 ;; mud-defn-or-expr: as the regular class defn-or-expr, but with nosave varieties for all fields 
@@ -541,18 +609,18 @@ class-field-mutator
                        [(index-save ...) save-index-list]
                        [(var-load ...) load-list])
            #'(mixin (saveable<%> from ...) (to ...)
-               (define/override (save)
-                 (let ([result (super save)])
-                   var-save ...
-                   result))
-               (define/override (save-index)
-                 (let ([result (super save-index)])
-                   index-save ...
-                   result))
-               (define/override (load vars)
-                 var-load ...
-                 (super load vars))
-               def-or-exp ...))))]))
+                 (define/override (save)
+                   (let ([result (super save)])
+                     var-save ...
+                     result))
+                 (define/override (save-index)
+                   (let ([result (super save-index)])
+                     index-save ...
+                     result))
+                 (define/override (load vars)
+                   var-load ...
+                   (super load vars))
+                 def-or-exp ...))))]))
            
 
                              
@@ -585,7 +653,7 @@ class-field-mutator
            (syntax/loc stx
              (begin
                (define name undefined)
-               (local [(define name/cid (database-get-cid! 'name (relative-module-path (filepath))))]
+               (let ([ name/cid (database-get-cid! 'name (relative-module-path (filepath)))])
                  (set! name
                        (class* (let ([se super-expression])
                                  (if (subclass? se saved-object%)
@@ -637,7 +705,7 @@ class-field-mutator
 (define (sql->gregor s)
   (match-define
     (sql-timestamp year month day hour minute second nanosecond tz) s)
-  (moment year month day hour minute second nanosecond #:tz (if tz tz (current-timezone))))
+  (moment year month day hour minute second nanosecond #:tz (or tz (current-timezone))))
 
 (define (gregor->sql g)
   (sql-timestamp (->year g)
@@ -660,13 +728,6 @@ class-field-mutator
       (gregor->sql d)
       (->posix d)))
   
-
-(struct object-record (obj holds semaphore))
-(define (make-object-record o)
-  (object-record (make-weak-box (box o)) (mutable-seteq) (make-semaphore 1)))
-
-(define null-record (object-record (make-weak-box #f) #f #f))
-
 (define object-table/semaphore (make-semaphore 1))
 (define object-table (make-hasheqv empty))
 
@@ -799,8 +860,6 @@ class-field-mutator
    (λ (dbsys) (case (dbsystem-name dbsys)
                 [(postgresql) "SELECT category, tag FROM tags WHERE oid = $1"]
                 [else "SELECT category, tag FROM tags WHERE oid = ?"]))))
-
-;; HERE
 
 (define load-fields-stmt
   (virtual-statement
@@ -966,13 +1025,30 @@ database-get-cid! : Symbol Path -> Nat
   cid)
 
 
+(define (load-class cid)
+  (let* ([classinfo/v (query-row _dbc_ class-load-stmt cid)]
+         [classname (string->symbol (vector-ref classinfo/v 0))]
+         [classfile (string->path (vector-ref classinfo/v 1))]
+         [classfile/resolved (build-path lib-path classfile)]
+         [changes (dynamic-rerequire classfile/resolved)] ;; TODO: Mark changed mudlib source files
+         [% (dynamic-require classfile/resolved classname)])
+    ;(mark-needed-reloads changes)
+    %))
+    
 
-
+(define (hot-reload old-object)
+  (let ([new-object (new (load-class (send old-object get-cid))
+                         [id (send old-object get-id)]
+                         [name (get-field name old-object)])])
+    (send new-object load-live-state (send old-object copy-live-state))
+    (send new-object on-hot-reload)
+    new-object))
+    
 ;; database-get-object: Nat -> (U (Instanceof MudObject%) #f)
 (define (database-get-object id)
   (unless (database-connected?) (error "database not connected"))
   ;"SELECT cid, created, saved, name, deleted, fields FROM objects WHERE oid = ~a"
-    (start-transaction _dbc_ #:isolation 'read-committed)
+  (start-transaction _dbc_ #:isolation 'read-committed)
   (define obj (query-maybe-row _dbc_ object-load-stmt id))
   (define tags (and obj (query-rows _dbc_ load-tags-stmt id)))
   (define indexed-fields (and obj (make-hasheq (map (λ (v)
@@ -984,19 +1060,11 @@ database-get-cid! : Symbol Path -> Nat
     
   (if (and obj (or (false? (vector-ref obj 4))
                    (zero? (vector-ref obj 4))))
-      (local [(define classinfo/v (query-row _dbc_ class-load-stmt (vector-ref obj 0)))
-              (define fields (parameterize ([current-readtable void-reader]) (read (open-input-bytes (vector-ref obj 5)))))
-              (define name (vector-ref obj 3))
-              (define classname (string->symbol (vector-ref classinfo/v 0)))
-              (define classfile (string->path (vector-ref classinfo/v 1)))
-              (define classfile/resolved (build-path lib-path classfile))
-              (define changes (dynamic-rerequire classfile/resolved)) ;; TODO: Mark changed mudlib source files
-              (define class (dynamic-require classfile/resolved classname))
-              (define new-object (new class [id id] [name name]))
-              (define new-object/tags (get-field tags new-object))
-              (define created (dbtime->moment (vector-ref obj 1)))
-              (define saved (dbtime->moment (vector-ref obj 2)))
-              ]
+      (let ([fields (parameterize ([current-readtable void-reader]) (read (open-input-bytes (vector-ref obj 5))))]
+            [new-object (new (load-class (vector-ref obj 0)) [id id] [name (vector-ref obj 3)])]
+            [created (dbtime->moment (vector-ref obj 1))]
+            [saved (dbtime->moment (vector-ref obj 2))])
+        (let ([tag-hash (get-field tags new-object)])
 
         ;;; TODO:  This should recompile the changed files, get the timestamps from the changed files, and
         ;;         updated all of their cid's with the timestamp
@@ -1011,16 +1079,16 @@ database-get-cid! : Symbol Path -> Nat
         (for ([row (in-list tags)])
           (local [(define category (vector-ref row 0))
                   (define tag      (string->symbol (vector-ref row 1)))]
-            (if (hash-has-key? new-object/tags category)
-                (set-add! (hash-ref new-object/tags category) tag)
-                (hash-set! new-object/tags category (mutable-seteq tag)))))
+            (if (hash-has-key? tag-hash category)
+                (set-add! (hash-ref tag-hash category) tag)
+                (hash-set! tag-hash category (mutable-seteq tag)))))
                 
         (send new-object on-load)
         (define orec (make-object-record new-object))
         (semaphore-wait object-table/semaphore)
         (hash-set! object-table id orec)
         (semaphore-post object-table/semaphore)
-        (weak-box-value (object-record-obj orec)))
+        (weak-box-value (object-record-obj orec))))
       #f))
   
 
@@ -1036,7 +1104,7 @@ database-get-cid! : Symbol Path -> Nat
   (unless (database-connected?) (error "database not connected"))
   (unless (is-a? o saved-object%)
     (raise-argument-error 'database-save-object "(is-a?/c saved-object%)" o))
-  (let-values ([(oid) (get-field id o)]
+  (let-values ([(oid) (send o get-id)]
                [(name) (get-field name o)]
                [(indexed-fields saved old-saved fields)
                 (with-transaction #:mode read
@@ -1089,7 +1157,7 @@ database-get-cid! : Symbol Path -> Nat
                (lazy-ref oid #f)
                (begin
                  (database-new-object o)
-                 (query-exec _dbc_ new-singleton-stmt (get-field id o) cid)
+                 (query-exec _dbc_ new-singleton-stmt (send o get-id) cid)
                  (oref o)))))]))
 
 #|(define-syntax (is-a?/rackmud stx)
@@ -1260,20 +1328,20 @@ database-get-cid! : Symbol Path -> Nat
   ;"INSERT INTO objects (class, created, name, deleted) VALUES (~v, ~v, ~v, false)
   (define new-obj-result (query _dbc_ new-object-stmt cid (moment->dbtime created) name))
   (cond [(and (simple-result? new-obj-result) (assoc 'insert-id (simple-result-info new-obj-result)))
-         (set-field! id o (cdr (assoc 'insert-id (simple-result-info new-obj-result))))]
+         (send o set-id! (cdr (assoc 'insert-id (simple-result-info new-obj-result))))]
         [(and (rows-result? new-obj-result)
               (= 1 (length (rows-result-headers new-obj-result)))
               (= 1 (length (rows-result-rows new-obj-result))))
-         (set-field! id o (vector-ref (first (rows-result-rows new-obj-result)) 0))]
+         (send o set-id! (vector-ref (first (rows-result-rows new-obj-result)) 0))]
         [else (error 'new "unexpected database result (~v) when instantiating new object" new-obj-result)])
   
   (send o on-load)
   (database-save-object o)
   (define orec (make-object-record o))
   (semaphore-wait object-table/semaphore)
-  (hash-set! object-table (get-field id o) orec)
+  (hash-set! object-table (send o get-id) orec)
   (semaphore-post object-table/semaphore)
-  (lazy-ref (get-field id o) orec))
+  (lazy-ref (send o get-id) orec))
 
 #|||||||||||||||||||||||||||||||||||||||||||
 
