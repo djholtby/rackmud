@@ -18,7 +18,7 @@
 
 (provide temp-object%)
 
-(provide save-all-objects saved-object=? lazy-ref lazy-ref? touch! get-object oref save-object get-singleton new/rackmud
+(provide object-executor backtrace save-all-objects saved-object=? lazy-ref lazy-ref? touch! get-object oref save-object get-singleton new/rackmud
          instantiate/rackmud make-object/rackmud send/rackmud send*/rackmud get-field/rackmud set-field!/rackmud is-a?/rackmud is-a?/c/rackmud
          object?/rackmud object=?/rackmud object-or-false=?/rackmud object->vector/rackmud object-interface/rackmud
          object-method-arity-includes?/rackmud field-names/rackmud object-info/rackmud dynamic-send/rackmud
@@ -129,7 +129,7 @@
 (define copy-live-state/k (generate-member-key))
 (define load-live-state/k (generate-member-key))
 (define get-cid/k (generate-member-key))
-
+(define set-self!/k (generate-member-key))
 
 (define-member-name save save/k)
 (define-member-name save-index save-index/k)
@@ -138,6 +138,7 @@
 (define-member-name copy-live-state copy-live-state/k)
 (define-member-name load-live-state load-live-state/k)
 (define-member-name get-cid get-cid/k)
+(define-member-name set-self! set-self!/k)
   
 
 
@@ -179,6 +180,20 @@
    (define hash-proc  (lambda (l hash-code) (hash-code (lazy-ref-id l))))
    (define hash2-proc (lambda (l hash-code) (hash-code (lazy-ref-id l))))])
 
+
+
+(define (get-object-record o)
+  (semaphore-wait object-table/semaphore)
+  (let ([orec
+         (begin0
+           (hash-ref! object-table
+                      (send o get-id)
+                      (λ () (make-object-record o)))
+           (semaphore-post object-table/semaphore))])
+    (unless (box? (weak-box-value (object-record-obj orec)))
+      (set-object-record-obj! orec  (make-weak-box (box o))))
+    orec))
+
 (define (oref o [weak? #f])
   (cond [(lazy-ref:weak? o)
          (if weak? o (lazy-ref (lazy-ref-id o) (weak-box-value (lazy-ref-obj o))))]
@@ -191,18 +206,15 @@
                             (make-weak-box o))
              (lazy-ref (send (unbox o) get-id) o))]
         [(is-a? o saved-object%)
-
-        (let [(id (send o get-id))
-              (orec (make-object-record o))]
-          (semaphore-wait object-table/semaphore)
-          (hash-set! object-table id orec)
-          (semaphore-post object-table/semaphore)
+        (let ([id (send o get-id)]
+              [orec (get-object-record o)])
           (if weak?
               (lazy-ref:weak id (object-record-obj orec))
               (lazy-ref id (weak-box-value (object-record-obj orec)))))]
-        [else #f]))
+        [else (raise-argument-error 'oref "(is-a?/c saved-object%)" o)]))
              
-(struct object-record (obj holds semaphore [wants-reload? #:mutable]))
+(struct object-record ([obj #:mutable] holds semaphore [wants-reload? #:mutable]))
+
 (define (make-object-record o)
   (object-record (make-weak-box (box o)) (mutable-seteq) (make-semaphore 1) #f))
 (define null-record (object-record (make-weak-box #f) #f #f #f))
@@ -262,12 +274,13 @@
       (display (string-replace (get-output-string out) "class" "object") port))))
 
 
-(define saveable<%> (interface () save save-index load on-create on-load updated))
+(define saveable<%> (interface () save save-index load on-create on-load on-hot-reload copy-live-state load-live-state updated))
 
 (define saved-object% (class* object% (writable<%> saveable<%> equal<%>)
                         (super-new)
                         (init [id (void)])
                         (define _id_ id)
+                        (define _self_ #f)
                         (init-field  [name "object"])
                         (field      
                          ;; tags : (HashTable Symbol (Setof Symbol))
@@ -303,14 +316,18 @@
                         (define/public (get-id) _id_)
                         (define (set-id! id) (set! _id_ id))
                         
-                        (define/public (on-create) (set-field! loaded this (now/moment/utc)))
-                        (define/public (on-load) (set-field! loaded this (now/moment/utc)))
+                        (define/public (on-create) (on-load))
+                        (define/public (on-load)
+                          (set! loaded (now/moment/utc))
+                          (on-hot-reload))
+                        (define/public (on-hot-reload) (void))
 
-                        (define/public (on-hot-reload) (set-field! loaded this (now/moment/utc)))
-                        (define/public (copy-live-state) (hasheq))
-                        (define/public (load-live-state flds) (void))
-                        
-
+                        (define/public (copy-live-state) (hasheq '_self_ _self_))
+                        (define/public (load-live-state flds) (set! _self_ (hash-ref flds '_self_ #f)))
+                        (define/public (set-self! self)
+                          (unless (lazy-ref? self)
+                            (raise-argument-error 'saved-object%:set-self! "lazy-ref?" self))
+                          (set! _self_ self))
                         
                         ; (load flds) initializes each field with the values in the given hash map
                         (define/public (load flds) (void))
@@ -339,10 +356,9 @@
     (quasisyntax/loc orig-stx
       (let ([o (unsyntax obj-stx)])
         (if (lazy-ref? o)
-            (let* ([started? #f]
-                   [o2 (lazy-deref o)]
-                   [id (send o2 get-id)]
-                   [orec (hash-ref object-table id)])
+            (let ([started? #f]
+                  [o2 (lazy-deref o)]
+                  [orec (hash-ref object-table (lazy-ref-id o))])
               (dynamic-wind
                 (lambda () (if started?
                                (raise (make-exn:fail:contract:continuation))
@@ -780,10 +796,12 @@
     (set! obj (weak-box-value obj)))
   (if obj (unbox obj)
       (let ([o (or (get-object id) (database-get-object id))])
-        (if (lazy-ref:weak? lr)
-            (set-lazy-ref-obj! lr (make-weak-box o))
-            (set-lazy-ref-obj! lr o))
-        (unbox o))))
+        (if o (begin
+                (if (lazy-ref:weak? lr)
+                    (set-lazy-ref-obj! lr (make-weak-box o))
+                    (set-lazy-ref-obj! lr o))
+                (unbox o))
+            #f))))
 
 (define _dbc_ #f)
 
@@ -1084,10 +1102,7 @@ database-get-cid! : Symbol Path -> Nat
                 (hash-set! tag-hash category (mutable-seteq tag)))))
                 
         (send new-object on-load)
-        (define orec (make-object-record new-object))
-        (semaphore-wait object-table/semaphore)
-        (hash-set! object-table id orec)
-        (semaphore-post object-table/semaphore)
+        (define orec (get-object-record new-object))
         (weak-box-value (object-record-obj orec))))
       #f))
   
@@ -1337,11 +1352,9 @@ database-get-cid! : Symbol Path -> Nat
   
   (send o on-load)
   (database-save-object o)
-  (define orec (make-object-record o))
-  (semaphore-wait object-table/semaphore)
-  (hash-set! object-table (send o get-id) orec)
-  (semaphore-post object-table/semaphore)
-  (lazy-ref (send o get-id) orec))
+  (oref o))
+  ;(define orec (get-object-reord o))
+  ;(lazy-ref (send o get-id) orec))
 
 #|||||||||||||||||||||||||||||||||||||||||||
 
