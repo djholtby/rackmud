@@ -35,7 +35,7 @@
     (define setup (dynamic-require (collection-file-path "setup.rkt" "setup") 'setup))
     (exit
      (if 
-      (setup #:jobs 1 #:collections `((,(symbol->string mudlib-collect))))
+      (setup #:jobs 4 #:collections `((,(symbol->string mudlib-collect))))
       0 ; success
       1 ; failure
       )))
@@ -159,9 +159,11 @@
     (and telnet-enabled?
          (thread (lambda ()
                    (let loop ()
-                     (define-values (in out) (tcp-accept telnet-serv))
-                     (define-values (lip ip) (tcp-addresses in))
-                     (add-telnet-user in out ip)
+                     (with-handlers ([exn? (lambda (e)
+                                             (database-log 'error "Telnet-Listener" (exn-message e) (backtrace (exn-continuation-marks e))))])
+                       (define-values (in out) (tcp-accept telnet-serv))
+                       (define-values (lip ip) (tcp-addresses in))
+                       (add-telnet-user in out ip))
                      (loop))))))
 
   (define ssl-serv
@@ -175,10 +177,13 @@
     (and telnet-ssl-enabled?
          (thread (lambda ()
                    (let loop ()
-                     (define-values (in out) (tcp-accept ssl-serv))
-                     (define-values (lip ip) (tcp-addresses in))
-                     (define-values (sin sout) (ports->ssl-ports in out #:mode 'accept #:context ssl-ctxt #:close-original? #t #:shutdown-on-close? #f))
-                     (add-telnet-user sin sout ip #t)
+                     (with-handlers ([exn? (lambda (e)
+                                             (database-log 'error "SSL-Telnet-Listener" (exn-message e) (backtrace (exn-continuation-marks e))))])
+
+                       (define-values (in out) (tcp-accept ssl-serv))
+                       (define-values (lip ip) (tcp-addresses in))
+                       (define-values (sin sout) (ports->ssl-ports in out #:mode 'accept #:context ssl-ctxt #:close-original? #t #:shutdown-on-close? #f))
+                       (add-telnet-user sin sout ip #t))
                      (loop))))))
 
 
