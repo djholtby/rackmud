@@ -1,7 +1,8 @@
 #lang racket/base
 
 (define t0 (current-inexact-milliseconds))
-(require net/rfc6455 racket/tcp openssl "../main.rkt" telnet "../websock.rkt" telnet/charset "config.rkt" "new-setup.rkt")
+(require net/rfc6455 racket/tcp openssl "../main.rkt" telnet "../websock.rkt" telnet/charset "config.rkt" "new-setup.rkt" compiler/compiler
+         compiler/option)
 (define-namespace-anchor anc)
 
 
@@ -29,16 +30,45 @@
 
 (parameterize ([current-library-collection-paths (if mudlib/path
                                                      (cons  mudlib/path (current-library-collection-paths))
-                                                     (current-library-collection-paths))])
+                                                     (current-library-collection-paths))]
+               [compile-enforce-module-constants #f])
   (define build? (hash-ref cfg 'build #f))
+  
+  
+  
   (when build?
-    (define setup (dynamic-require (collection-file-path "setup.rkt" "setup") 'setup))
-    (exit
+    ;(define setup (dynamic-require (collection-file-path "setup.rkt" "setup") 'setup))
+    ;(time (compile-collection-zos (symbol->string mudlib-collect) #:skip-doc-sources? #t))
+    (somewhat-verbose #t)
+    (displayln "Compiling mudlib")
+    
+    (parameterize ([current-output-port
+                    (let ([o (current-output-port)])
+                      (make-output-port 'filtered-out
+                                        o
+                                        (λ (bs start end non-blocking? enable-breaks?)
+                                          (when (regexp-match #px"^\\s*compiling" (subbytes bs start end))
+                                            (write-bytes bs o start end)
+                                            (displayln "" o))
+                                          (- end start))
+                                        (λ () (close-output-port o))))
+                    ])
+      (compile-directory-zos (collection-path (symbol->string mudlib-collect))
+                             (λ (name thunk)
+                               (if (symbol=? name 'name) (symbol->string mudlib-collect) (thunk)))
+                             #:verbose #t
+                             #:skip-doc-sources? #t))
+    ;(for ([line (in-list (string-split (get-output-string op) "\n"))])
+    ;  (unless (regexp-match #px"^checking:" line)
+    ;    (displayln line)))
+    (exit 0))
+  #|
      (if 
       (setup #:jobs 4 #:collections `((,(symbol->string mudlib-collect))))
       0 ; success
       1 ; failure
-      )))
+      )|#
+  
 
   
 
