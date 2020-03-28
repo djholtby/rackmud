@@ -247,11 +247,16 @@
 
 
 (define (add-thread-to-object orec)
-  (semaphore-wait (object-record-reload-semaphore orec))
   (semaphore-wait (object-record-semaphore orec))
-  (set-add! (object-record-holds orec) (current-thread)) 
-  (semaphore-post (object-record-semaphore orec))
-  (semaphore-post (object-record-reload-semaphore orec)))
+  (if (set-member? (object-record-holds orec) (current-thread))
+      (semaphore-post (object-record-semaphore orec))
+      (begin
+        (semaphore-post (object-record-semaphore orec))
+        (semaphore-wait (object-record-reload-semaphore orec))
+        (semaphore-wait (object-record-semaphore orec))
+        (set-add! (object-record-holds orec) (current-thread))
+        (semaphore-post (object-record-reload-semaphore orec))
+        (semaphore-post (object-record-semaphore orec)))))
 
 (define (remove-thread-from-object orec)
   (semaphore-wait (object-record-semaphore orec))
@@ -374,7 +379,8 @@
                 [orec (hash-ref object-table (lazy-ref-id o))])
             (dynamic-wind
              (lambda () (if started?
-                            (raise (make-exn:fail:contract:continuation))
+                            (raise (make-exn:fail:contract:continuation "illegal jump into saved-object method after it already returned"
+                                                                        (current-continuation-marks)))
                             (add-thread-to-object orec)))
              (lambda () (set! started? #t) ((unsyntax-splicing the-thing/pre) o2 (unsyntax-splicing the-thing/post)))
              (lambda () (remove-thread-from-object orec))))
