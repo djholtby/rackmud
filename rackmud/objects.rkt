@@ -18,7 +18,8 @@
 
 (provide temp-object%)
 
-(provide trigger-reload! backtrace save-all-objects saved-object=? lazy-ref lazy-ref? touch! get-object oref save-object get-singleton new/rackmud
+(provide trigger-reload! backtrace save-all-objects saved-object=? lazy-ref lazy-ref? touch! get-object oref save-object get-singleton
+         new/rackmud
          instantiate/rackmud make-object/rackmud send/rackmud send*/rackmud get-field/rackmud set-field!/rackmud is-a?/rackmud is-a?/c/rackmud
          object?/rackmud object=?/rackmud object-or-false=?/rackmud object->vector/rackmud object-interface/rackmud
          object-method-arity-includes?/rackmud field-names/rackmud object-info/rackmud dynamic-send/rackmud
@@ -144,10 +145,7 @@
 
 
 
-(define (database-setup db-type db-port db-sock db-srv db-db db-user db-pass)
-  (set-database-connection! db-type
-                            (make-rackmud-db-pool db-type db-port db-sock db-srv db-db db-user db-pass)))
-   
+
 
 
 
@@ -552,7 +550,8 @@
                                                                                                    (cons #'id indexed-class-vars))))
                                                               (syntax->list #'(id ...)))
                                                     #'(define-values (id ...) expr))]
-        [(define-values/nosave (id ...) expr) (begin (for-each (λ (id) (with-syntax ([id id]) (set! unsaved-class-vars (cons #'id unsaved-class-vars))))
+        [(define-values/nosave (id ...) expr) (begin (for-each (λ (id) (with-syntax ([id id])
+                                                                         (set! unsaved-class-vars (cons #'id unsaved-class-vars))))
                                                                (syntax->list #'(id ...)))
                                                      #'(define-values (id ...) expr))]
         [(field field-decl ...) (begin
@@ -1052,6 +1051,11 @@
     (disconnect _dbc_)
     (set! _dbc_ #f)))
 
+(define (database-setup db-type db-port db-sock db-srv db-db db-user db-pass)
+  (set-database-connection! db-type
+                            (make-rackmud-db-pool db-type db-port db-sock db-srv db-db db-user db-pass)))
+   
+
 (define (set-database-connection! system pool)
   (unless (connection? pool) (raise-argument-error 'set-database-connection! "connection?" pool))
   (if (symbol=? system 'sqlite3) ;; TODO, does anything else not support timestamp???
@@ -1060,8 +1064,7 @@
   
   (when _dbc_ (disconnect _dbc_))
   (set! _dbc_ pool)
-    
-    
+
   (when (thread? logger-thread)
     (kill-thread logger-thread))
 
