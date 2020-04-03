@@ -2,12 +2,13 @@
 
 (define t0 (current-inexact-milliseconds))
 (require net/rfc6455 racket/tcp openssl "../main.rkt" telnet "../websock.rkt" telnet/charset "config.rkt" "new-setup.rkt" compiler/compiler
-         compiler/option)
+         compiler/option racket/place racket/runtime-path)
 (define-namespace-anchor anc)
 
 
 
 (define cfg (load-rackmud-settings))
+(define-runtime-path COMPILER-PLACE "./compiler-place.rkt")
 
 (define missing-file? (hash-ref cfg 'no-file? #f))
 
@@ -28,49 +29,15 @@
 ;                                                       (cons (hasheq mudlib-collect (list mudlib/path)) (current-library-collection-links))
 ;                                                       (current-library-collection-links))])
 
+(define compiler-place
+  (dynamic-place COMPILER-PLACE 'compiler-place-main))
+
+(place-channel-put compiler-place mudlib/path)
+(place-channel-put compiler-place mudlib-collect)
+
 (parameterize ([current-library-collection-paths (if mudlib/path
                                                      (cons  mudlib/path (current-library-collection-paths))
-                                                     (current-library-collection-paths))]
-               [compile-enforce-module-constants #f])
-  (define build? (hash-ref cfg 'build #f))
-  
-  
-  
-  (when build?
-    ;(define setup (dynamic-require (collection-file-path "setup.rkt" "setup") 'setup))
-    ;(time (compile-collection-zos (symbol->string mudlib-collect) #:skip-doc-sources? #t))
-    (somewhat-verbose #t)
-    (displayln "Compiling mudlib")
-    
-    (parameterize ([current-output-port
-                    (let ([o (current-output-port)])
-                      (make-output-port 'filtered-out
-                                        o
-                                        (λ (bs start end non-blocking? enable-breaks?)
-                                          (when (regexp-match #px"^\\s*compiling" (subbytes bs start end))
-                                            (write-bytes bs o start end)
-                                            (displayln "" o))
-                                          (- end start))
-                                        (λ () (close-output-port o))))
-                    ])
-      (compile-directory-zos (collection-path (symbol->string mudlib-collect))
-                             (λ (name thunk)
-                               (if (symbol=? name 'name) (symbol->string mudlib-collect) (thunk)))
-                             #:verbose #t
-                             #:skip-doc-sources? #t))
-    ;(for ([line (in-list (string-split (get-output-string op) "\n"))])
-    ;  (unless (regexp-match #px"^checking:" line)
-    ;    (displayln line)))
-    (exit 0))
-  #|
-     (if 
-      (setup #:jobs 4 #:collections `((,(symbol->string mudlib-collect))))
-      0 ; success
-      1 ; failure
-      )|#
-  
-
-  
+                                                     (current-library-collection-paths))])
 
   (define telnet-port (hash-ref cfg 'telnet:port #f))
   (define telnet-ssl-port (hash-ref cfg 'telnet:ssl-port #f))
@@ -120,7 +87,9 @@
   
   
   
-
+  (unless (place-channel-get compiler-place)
+    (displayln "\nmudlib is not in a buildable state.  Aborting!\n" (current-error-port))
+    (exit 1))
 
   ;; With that taken care of, load the master object
   (display "Loading Master Object...")
@@ -129,7 +98,7 @@
   (define resolved-collect (collection-file-path mudlib-module (symbol->string mudlib-collect) #:fail
                                                  (lambda (message)
                                                    (eprintf "Error loading mudlib collect\n~a\n" message)
-                                                   (exit -1))))
+                                                   (exit 1))))
   
   (let-values ([(base-lib-path module-name _) (split-path resolved-collect)])
     (set-lib-path! base-lib-path))
@@ -258,7 +227,7 @@
                          [pkey-evt (filesystem-change-evt (hash-ref cfg 'ssl:private-key))])
                      (let loop ()
                        (sync cert-evt pkey-evt)
-                       (sleep 1/10) ; just in case there's a delay between on changing and the other 
+                       (sleep 1/10) ; just in case there's a delay between one changing and the other 
                        (reload-certificates!)))))))
 
   (printf "started in ~vms\n" (round (inexact->exact (- (current-inexact-milliseconds) t0))))
@@ -278,7 +247,18 @@
 
   ;; Finally, if running in interactive mode, start the REPL thread
 
-
+  (define rebuild-thread
+    (thread
+     (λ ()
+       (let loop ()
+         (define changes (place-channel-get compiler-place))
+         (when (cons? changes)
+           ;; TODO!!!
+           (rackmud-mark-reloads changes)
+           (void))
+         (loop)))))
+  
+  
   (define repl-thread
     (and (hash-ref cfg 'interactive #f)
          (thread

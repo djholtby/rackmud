@@ -19,7 +19,7 @@
 (provide temp-object%)
 
 (provide trigger-reload! backtrace save-all-objects saved-object=? lazy-ref lazy-ref? touch! get-object oref save-object get-singleton
-         new/rackmud
+         new/rackmud rackmud-mark-reloads
          instantiate/rackmud make-object/rackmud send/rackmud send*/rackmud get-field/rackmud set-field!/rackmud is-a?/rackmud is-a?/c/rackmud
          object?/rackmud object=?/rackmud object-or-false=?/rackmud object->vector/rackmud object-interface/rackmud
          object-method-arity-includes?/rackmud field-names/rackmud object-info/rackmud dynamic-send/rackmud
@@ -242,6 +242,10 @@
         (thread-send object-reload-thread orec)
         (semaphore-post (object-record-semaphore orec)))))
 
+
+(define (rackmud-mark-reloads changed-files)
+  (foldl append empty
+         (map file->cids changed-files)))
 
 
 (define (add-thread-to-object orec)
@@ -1040,6 +1044,13 @@
                 [(postgresql)  "DELETE FROM auth WHERE oid = $1"]
                 [else "DELETE FROM auth WHERE oid = ?"]))))
 
+(define module-to-cid-query
+  (virtual-statement
+   (λ (dbsys) (case (dbsystem-name dbsys)
+                [(postgresql) "SELECT cid from classes where module = $1"]
+                [else "SELECT cid from classes where module = ?"]))))
+  
+
 (define logger-thread #f)
 
 
@@ -1127,7 +1138,7 @@
 database-get-cid! : Symbol Path -> Nat
 |#
 (define (database-get-cid! class-name module-name)
-  (when (not (database-connected?)) (error "database not connected"))
+  (when (not (database-connected?)) (error 'database-get-cid "database not connected"))
   (define cid (hash-ref cid-map (cons class-name module-name) (lambda () #f)))
   (unless cid
     (define class-string (symbol->string class-name))
@@ -1140,6 +1151,11 @@ database-get-cid! : Symbol Path -> Nat
       (hash-set! cid-map (cons class-name module-name) cid)))
   (unless cid (error 'database-get-cid! "could not find or create new classid"))
   cid)
+
+
+(define (file->cids module-name)
+  (when (not (database-connected?)) (error 'file->cids "database not connected"))
+  (query-list _dbc_ module-to-cid-query (path->string (relative-module-path (make-resolved-module-path module-name)))))
 
 
 (define (load-class cid)
@@ -1263,7 +1279,7 @@ database-get-cid! : Symbol Path -> Nat
   (syntax-case stx()
     [(_ cls (_id arg) ...)
      #'(let ([c cls])
-         (unless (subclass? c saved-object%) (raise-argument-error 'get-singleton "(subclass?/c saved-object)" c))
+         (unless (subclass? c saved-object%) (raise-argument-error 'get-singleton "(subclass?/c saved-object%)" c))
          (let* ([o (new c (_id arg) ...)]
                 [cid (send o get-cid)]
                 [oid (query-maybe-value _dbc_ get-singleton-stmt cid)])
@@ -1273,13 +1289,6 @@ database-get-cid! : Symbol Path -> Nat
                  (database-new-object o)
                  (query-exec _dbc_ new-singleton-stmt (send o get-id) cid)
                  (oref o)))))]))
-
-#|(define-syntax (is-a?/rackmud stx)
-  (syntax-case stx ()
-    [(_ v-expr type)
-     #'(let ([v v-expr])
-         (is-a? (if (lazy-ref? v) (lazy-deref v) v) type))]))
-|#
 
 (define (maybe-lazy-deref v)
   (if (lazy-ref? v) (lazy-deref v) v))

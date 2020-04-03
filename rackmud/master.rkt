@@ -228,13 +228,14 @@ Main Loop
   (scheduler-start! scheduler))
 
 (define (load-master-object! resolved-mudlib-path master-class)
-  (dynamic-rerequire resolved-mudlib-path)
+  (define paths (dynamic-rerequire resolved-mudlib-path))
   (define % (dynamic-require resolved-mudlib-path master-class))
   (unless (implementation? % master<%>)
     (raise-argument-error 'load-master-object! "(implementation?/c master<%>" %))
   (unless (subclass? % saved-object%)
     (raise-argument-error 'load-master-object! "(subclass?/c saved-object%" %))
-  (set! master-object (get-singleton %)))
+  (set! master-object (get-singleton %))
+  paths)
 #|
 (define (start-up! cfg)
   (let ([mudlib (rackmud-config-mudlib cfg)]
