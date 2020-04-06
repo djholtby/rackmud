@@ -39,7 +39,7 @@
 (define cid->paths (make-hasheqv))
 (define path->cids (make-hash))
 
-(define (register-class-deps cid import-map)
+#|(define (register-class-deps cid import-map)
   (semaphore-wait class-dep-sema)
   (define old-deps (hash-ref cid->paths cid (cons #f (make-hash))))
   (for ([path (in-hash-values (cdr old-deps))])
@@ -47,7 +47,7 @@
   (hash-set! cid->paths cid (cons (now/moment/utc) import-map))
   (for ([path (in-hash-values import-map)])
     (set-add! (hash-ref! path->cids path mutable-set) cid))
-  (semaphore-post class-dep-sema))
+  (semaphore-post class-dep-sema))|#
   
 
 (define (path-begins-with? path dir-path)
@@ -179,15 +179,29 @@
    (define hash2-proc (lambda (l hash-code) (hash-code (lazy-ref-id l))))])
 
 
+(define (cid-list->objects lst-of-cid)
+  (semaphore-wait object-table/semaphore)
+  (begin0
+    (foldl (λ (cid st)
+             (set-union st (hash-ref cid-to-object-table cid '())))
+           (seteq)
+           lst-of-cid)
+    (semaphore-post object-table/semaphore)))
+
+(define (update-cid-record cid orec)
+  (hash-update! cid-to-object-table
+                cid
+                (λ (st)
+                  (set-add st orec))
+                (λ () (seteq))))
 
 (define (get-object-record o)
   (semaphore-wait object-table/semaphore)
-  (let ([orec
-         (begin0
-           (hash-ref! object-table
-                      (if (lazy-ref? o) (lazy-ref-id o) (send o get-id))
-                      (λ () (make-object-record o)))
-           (semaphore-post object-table/semaphore))])
+  (let ([orec (hash-ref! object-table
+                         (if (lazy-ref? o) (lazy-ref-id o) (send o get-id))
+                         (λ () (make-object-record o)))])
+    (update-cid-record (send o get-cid) orec)
+    (semaphore-post object-table/semaphore)
     (unless (box? (weak-box-value (object-record-obj orec)))
       (set-object-record-obj! orec  (make-weak-box (box o))))
     orec))
@@ -217,35 +231,40 @@
   (object-record (make-weak-box (box o)) (mutable-seteq) (make-semaphore 1) (make-semaphore 1) #f))
 (define null-record (object-record (make-weak-box #f) #f #f #f #f))
 
+
+(define object-reload-channel (make-channel))
 (define object-reload-thread
   (thread
    (λ ()
      (let loop ()
-       (let* ([orec (thread-receive)]
-              [object-box (weak-box-value (object-record-obj orec))]
-              [old-object (unbox object-box)]
-              [new-object (hot-reload old-object)])
-         (set-box! object-box new-object)
-         (set-object-record-wants-reload?! orec #f)
-         (semaphore-post (object-record-semaphore orec))
-         (semaphore-post (object-record-reload-semaphore orec)))
-       (loop)))))
+       (define record-set (thread-receive))
+       (for ([orec (in-set record-set)])
+         (semaphore-wait (object-record-reload-semaphore orec))
+         (semaphore-wait (object-record-semaphore orec))
+         (unless (set-empty? (object-record-holds orec))
+           (set-object-record-wants-reload?! orec #t)
+           (semaphore-post (object-record-semaphore orec))
+           (sync object-reload-channel))
+         (let ([object-box (weak-box-value (object-record-obj orec))])
+           (when object-box
+             (let* ([old-object (unbox object-box)]
+                    [new-object (hot-reload old-object)])
+               (set-object-record-wants-reload?! orec #f)
+               (semaphore-post (object-record-semaphore orec))
+               (semaphore-post (object-record-reload-semaphore orec)))))
+       (loop))))))
          
               
          
 (define (trigger-reload! o)
-  (let ([orec (get-object-record o)])
-    (semaphore-wait (object-record-reload-semaphore orec))
-    (semaphore-wait (object-record-semaphore orec))
-    (set-object-record-wants-reload?! orec #t)
-    (if (set-empty? (object-record-holds orec))
-        (thread-send object-reload-thread orec)
-        (semaphore-post (object-record-semaphore orec)))))
+  (thread-send object-reload-thread (list (get-object-record o))))
 
 
 (define (rackmud-mark-reloads changed-files)
-  (foldl append empty
-         (map file->cids changed-files)))
+  (thread-send object-reload-thread
+               (cid-list->objects
+                (foldl append empty
+                       (map file->cids changed-files)))))
 
 
 (define (add-thread-to-object orec)
@@ -265,7 +284,7 @@
   (set-remove! (object-record-holds orec) (current-thread))
   (if (and (set-empty? (object-record-holds orec))
            (object-record-wants-reload? orec))
-      (thread-send object-reload-thread orec)
+      (channel-put object-reload-channel orec)
       (semaphore-post (object-record-semaphore orec))))
  
 
@@ -845,6 +864,7 @@
   
 (define object-table/semaphore (make-semaphore 1))
 (define object-table (make-hasheqv empty))
+(define cid-to-object-table (make-hasheqv empty))
 
 (define (save-all-objects)
   (semaphore-wait object-table/semaphore)
