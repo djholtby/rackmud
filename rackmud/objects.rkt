@@ -1,12 +1,12 @@
 #lang racket/base
 
-(require racket/class racket/list racket/bool racket/string racket/path racket/match racket/local racket/set racket/contract racket/logging
-         (for-syntax racket/base racket/path) syntax/modresolve racket/splicing racket/stxparam)
+(require racket/class racket/list racket/bool racket/string racket/path racket/match racket/local racket/set racket/contract
+         (for-syntax racket/base) syntax/modresolve racket/stxparam)
 
 (require db db/util/datetime gregor versioned-box)
 
 (require racket/rerequire)
-(require racket/fasl)
+;(require racket/fasl)
 (require racket/hash)
 (require racket/undefined)
 (require racket/struct)
@@ -719,7 +719,7 @@
                        [(index-load ...) load-index-list]
                        [(unsaved-load ...) load-unsaved-list])
            (syntax/loc stx
-             (splicing-syntax-parameterize ([this/rackmud/param (syntax-id-rules () [_ (send this get-self)])])
+             (syntax-parameterize ([this/rackmud/param (syntax-id-rules () [_ (send this get-self)])])
                (mixin (saveable<%> from ...) (to ...)
                  (define/override (save)
                    (let ([result (super save)])
@@ -787,15 +787,15 @@
                     [name/string (string-append "#<saved-object:" (symbol->string (syntax-e name)) ">")])
         (syntax/loc orig-stx
           (begin
+            (provide name)
             (define name undefined)
-            (splicing-syntax-parameterize ([this/rackmud/param (syntax-id-rules () [_ (send this get-self)])])
+            (syntax-parameterize ([this/rackmud/param (syntax-id-rules () [_ (send this get-self)])])
               (let ([ name/cid (database-get-cid! 'name (relative-module-path (filepath)))])
                 (set! name
                       (class* (let ([se super-expression])
                                 (if (subclass? se saved-object%)
                                     se
                                     (raise-argument-error 'define-saved-class "(subclass?/c saved-object%)" se)))
-
                         (interface-expr ...)
                         (define/override (get-cid) name/cid)
                         (define/override (save)
@@ -823,9 +823,7 @@
                           (super load-live-state vars))
                         (define/override (custom-display port)
                           (display name/string port))
-                        ;   (splicing-syntax-parameterize ([this/rackmud (syntax-id-rules () [_ (get-self)])])
-                        def-or-exp ...))))
-            (provide name)))))))
+                        def-or-exp ...))))))))))
 
                        
 #|
