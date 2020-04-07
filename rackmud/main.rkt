@@ -41,7 +41,7 @@
              object-method-arity-includes?
              field-names
              object-info
-
+             this
              with-method
              dynamic-send
              send/keyword-apply
@@ -88,7 +88,7 @@
              instantiate/rackmud
              is-a?/rackmud
              is-a?/c/rackmud
-
+             this/rackmud
              object?/rackmud
              object=?/rackmud
              object-or-false=?/rackmud
@@ -135,6 +135,7 @@
   [field-bound?/rackmud field-bound?]
   [class-field-accessor/rackmud class-field-accessor]
   [class-field-mutator/rackmud class-field-mutator]
+  [this/rackmud this]
 
   ))
 

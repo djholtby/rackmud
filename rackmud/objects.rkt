@@ -1,7 +1,7 @@
 #lang racket/base
 
 (require racket/class racket/list racket/bool racket/string racket/path racket/match racket/local racket/set racket/contract racket/logging
-         (for-syntax racket/base racket/path) syntax/modresolve)
+         (for-syntax racket/base racket/path) syntax/modresolve racket/splicing racket/stxparam)
 
 (require db db/util/datetime gregor versioned-box)
 
@@ -24,7 +24,7 @@
          object?/rackmud object=?/rackmud object-or-false=?/rackmud object->vector/rackmud object-interface/rackmud
          object-method-arity-includes?/rackmud field-names/rackmud object-info/rackmud dynamic-send/rackmud
          send/keyword-apply/rackmud send/apply/rackmud dynamic-get-field/rackmud dynamic-set-field!/rackmud field-bound?/rackmud
-         class-field-accessor/rackmud class-field-mutator/rackmud)
+         class-field-accessor/rackmud class-field-mutator/rackmud this/rackmud)
 
          
 (provide database-setup database-disconnect database-find-indexed)
@@ -130,7 +130,7 @@
 (define copy-live-state/k (generate-member-key))
 (define load-live-state/k (generate-member-key))
 (define get-cid/k (generate-member-key))
-(define set-self!/k (generate-member-key))
+(define get-self/k (generate-member-key))
 
 (define-member-name save save/k)
 (define-member-name save-index save-index/k)
@@ -139,8 +139,7 @@
 (define-member-name copy-live-state copy-live-state/k)
 (define-member-name load-live-state load-live-state/k)
 (define-member-name get-cid get-cid/k)
-(define-member-name set-self! set-self!/k)
-  
+(define-member-name get-self get-self/k)  
 
 
 
@@ -252,20 +251,16 @@
                (set-object-record-wants-reload?! orec #f)
                (semaphore-post (object-record-semaphore orec))
                (semaphore-post (object-record-reload-semaphore orec)))))
-       (loop))))))
-         
-              
+         (loop))))))
          
 (define (trigger-reload! o)
   (thread-send object-reload-thread (list (get-object-record o))))
-
 
 (define (rackmud-mark-reloads changed-files)
   (thread-send object-reload-thread
                (cid-list->objects
                 (foldl append empty
                        (map file->cids changed-files)))))
-
 
 (define (add-thread-to-object orec)
   (semaphore-wait (object-record-semaphore orec))
@@ -310,8 +305,8 @@
       (display this% out)
       (display (string-replace (get-output-string out) "class" "object") port))))
 
-
-(define saveable<%> (interface () save save-index load on-create on-load on-hot-reload copy-live-state load-live-state updated))
+(define saveable<%> (interface () save save-index load on-create on-load on-hot-reload copy-live-state load-live-state updated
+                      set-id! get-cid get-self get-id))
 
 (define saved-object% (class* object% (writable<%> saveable<%> equal<%>)
                         (super-new)
@@ -359,14 +354,20 @@
                         
                         (define/public (on-hot-reload) (void))
 
-                        (define/public (copy-live-state) (make-hasheq `((_self_ . _self_))))
+                        (define/public (copy-live-state) (make-hasheq '()))
                         
-                        (define/public (load-live-state flds) (set! _self_ (hash-ref flds '_self_ #f)))
+                        (define/public (load-live-state flds) (void))
 
-                        (define/public (set-self! self)
-                          (unless (lazy-ref? self)
-                            (raise-argument-error 'saved-object%:set-self! "lazy-ref?" self))
-                          (set! _self_ self))
+                        ;(define/public (set-self! self)
+                        ;  (unless (lazy-ref? self)
+                        ;    (raise-argument-error 'saved-object%:set-self! "lazy-ref?" self))
+                        ;  (set! self))
+
+                        (define/public (get-self)
+                          (if _self_ _self_
+                              (begin
+                                (set! _self_ (oref this))
+                                _self_)))
                         
                         ; (load flds) initializes each field with the values in the given hash map
                         (define/public (load flds) (void))
@@ -387,39 +388,44 @@
                         
                         (will-register object-executor this database-save-object)))
 
+(define-syntax-parameter this/rackmud/param
+  (syntax-id-rules () [_ this]))
+
+(define-syntax this/rackmud
+  (make-parameter-rename-transformer #'this/rackmud/param))
 
 
+(define-syntax define/provide-context-keyword
+  (syntax-rules ()
+    [(_ (id param-id) ...)
+     (begin
+       (begin
+         (provide id)
+         (define-syntax-parameter param-id 
+           (make-set!-transformer not-in-a-class))
+         (define-syntax id
+           (make-parameter-rename-transformer #'param-id)))
+       ...)]))
                   
 
 (define-for-syntax (do-object-action orig-stx the-thing/pre obj-stx the-thing/post)
-  (quasisyntax/loc orig-stx
-    (let ([o (unsyntax obj-stx)])
-      (if (lazy-ref? o)
-          (let ([started? #f]
-                [o2 (lazy-deref o)]
-                [orec (hash-ref object-table (lazy-ref-id o))])
-            (dynamic-wind
-             (lambda () (if started?
-                            (raise (make-exn:fail:contract:continuation "illegal jump into saved-object method after it already returned"
-                                                                        (current-continuation-marks)))
-                            (add-thread-to-object orec)))
-             (lambda () (set! started? #t) ((unsyntax-splicing the-thing/pre) o2 (unsyntax-splicing the-thing/post)))
-             (lambda () (remove-thread-from-object orec))))
-          ((unsyntax-splicing the-thing/pre)  o (unsyntax-splicing the-thing/post) )))))
-#|
-(define-syntax (send/rackmud stx)
-  (syntax-case stx ()
-    [(_ obj-expr method-id arg ...)
-     (syntax/loc stx
-       (send 
-        (maybe-lazy-deref obj-expr)
-        method-id arg ...))]
-    [(_ obj-expr method-id arg ... . arglist)
-     (syntax/loc stx
-       (send 
-        (maybe-lazy-deref obj-expr)
-        method-id arg ... . arglist))]))
-|#
+  (if (eq? 'this (syntax-e obj-stx))
+      (quasisyntax/loc orig-stx
+        ((unsyntax-splicing the-thing/pre) this (unsyntax-splicing the-thing/post)))
+      (quasisyntax/loc orig-stx
+        (let ([o (unsyntax obj-stx)])
+          (if (lazy-ref? o)
+              (let ([started? #f]
+                    [o2 (lazy-deref o)]
+                    [orec (hash-ref object-table (lazy-ref-id o))])
+                (dynamic-wind
+                 (lambda () (if started?
+                                (raise (make-exn:fail:contract:continuation "illegal jump into saved-object method after it already returned"
+                                                                            (current-continuation-marks)))
+                                (add-thread-to-object orec)))
+                 (lambda () (set! started? #t) ((unsyntax-splicing the-thing/pre) o2 (unsyntax-splicing the-thing/post)))
+                 (lambda () (remove-thread-from-object orec))))
+              ((unsyntax-splicing the-thing/pre)  o (unsyntax-splicing the-thing/post)))))))
 
 (define-syntax (send/rackmud stx)
   (syntax-case stx ()
@@ -503,14 +509,18 @@
 (define-syntax (get-field/rackmud stx)
   (syntax-case stx ()
     [(_ field-id obj-expr)
-     #'(get-field field-id (maybe-lazy-deref (maybe-lazy-deref obj-expr)))]))
+     (if (eq? 'this (syntax-e #'obj-expr))
+         #'(get-field field-id this)
+         #'(get-field field-id (maybe-lazy-deref obj-expr)))]))
 
 (define-syntax (set-field!/rackmud stx)
   (syntax-case stx ()
     [(_ field-id obj-expr value-expr)
-     #'(set-field! field-id 
-                   (maybe-lazy-deref obj-expr)
-                   value-expr)]))
+     (if (eq? 'this (syntax-e #'obj-expr))
+         #'(set-field! field-id this value-expr)
+         #'(set-field! field-id 
+                       (maybe-lazy-deref obj-expr)
+                       value-expr))]))
 
 ;; (define-saved-class name super-expression mud-defn-or-expr ...) defines a saved-class descended from super-expression
 ;; mud-defn-or-expr: as the regular class defn-or-expr, but with nosave varieties for all fields 
@@ -518,24 +528,26 @@
 (define-syntax (define-saved-class* stx)
   (syntax-case stx ()
     [(_ name super-expression (interface-expr ...)  body ...)
-     (with-syntax ([orig-stx stx])
-       (syntax/loc stx (define-saved-class/priv orig-stx
-                         name
-                         super-expression
-                         (interface-expr ...)
-                         body ...)))]))
+     ;     (with-syntax ([orig-stx stx])
+     (define-saved-class/priv stx #'name #'super-expression (syntax->list #'(interface-expr ...)) (syntax->list #'(body ...)))]))
+;       (syntax/loc stx (define-saved-class/priv orig-stx
+;                         name
+;                         super-expression
+;                         (interface-expr ...)
+;                         body ...)))]))
 
 ;; (define-saved-class name super-expression body ...) is equivalent to (define-saved-class* name super-expression () body ...)
 
 (define-syntax (define-saved-class stx)
   (syntax-case stx ()
     [(_ name super-expression body ...)
-     (with-syntax ([orig-stx stx])
-       (syntax/loc stx (define-saved-class/priv orig-stx
-                         name
-                         super-expression
-                         () 
-                         body ...)))]))
+     ;(with-syntax ([orig-stx stx])
+     (define-saved-class/priv stx #'name #'super-expression '() (syntax->list #'(body ...)))]))
+;(syntax/loc stx (define-saved-class/priv orig-stx
+;                  name
+;                  super-expression
+;                  () 
+;                  body ...)))]))
 
 
 
@@ -706,39 +718,117 @@
                        [(var-load ...) load-list]
                        [(index-load ...) load-index-list]
                        [(unsaved-load ...) load-unsaved-list])
-           #'(mixin (saveable<%> from ...) (to ...)
-               (define/override (save)
-                 (let ([result (super save)])
-                   var-save ...
-                   result))
-               (define/override (save-index)
-                 (let ([result (super save-index)])
-                   index-save ...
-                   result))
-               (define/override (copy-live-state)
-                 (let ([result (super copy-live-state)])
-                   var-save ...
-                   index-save ...
-                   unsaved-save ...
-                   result))
-               (define/override (load vars)
-                 var-load ...
-                 index-load ...
-                 (super load vars))
-               (define/override (load-live-state vars)
-                 var-load ...
-                 index-load ...
-                 unsaved-load ...
-                 (super load-live-state vars))
-               def-or-exp ...))))]))
+           (syntax/loc stx
+             (splicing-syntax-parameterize ([this/rackmud/param (syntax-id-rules () [_ (send this get-self)])])
+               (mixin (saveable<%> from ...) (to ...)
+                 (define/override (save)
+                   (let ([result (super save)])
+                     var-save ...
+                     result))
+                 (define/override (save-index)
+                   (let ([result (super save-index)])
+                     index-save ...
+                     result))
+                 (define/override (copy-live-state)
+                   (let ([result (super copy-live-state)])
+                     var-save ...
+                     index-save ...
+                     unsaved-save ...
+                     result))
+                 (define/override (load vars)
+                   var-load ...
+                   index-load ...
+                   (super load vars))
+                 (define/override (load-live-state vars)
+                   var-load ...
+                   index-load ...
+                   unsaved-load ...
+                   (super load-live-state vars))
+                 def-or-exp ...))))))
+     ]))
            
 
                              
 
 
+(define-for-syntax (define-saved-class/priv orig-stx name super-expression interface-expr-list body-list)
+  (let-values ([(wrapped-def-or-exprs saved-class-vars indexed-class-vars unsaved-class-vars)
+                (wrap-saved-class-exprs body-list)])
+    (let* (;; List of syntaxes needed to save the saved-fields
+           [save-list (map (λ (id) (with-syntax ([id id])
+                                     #'(hash-set! result 'id id)))
+                           saved-class-vars)]
+           [save-index-list (map (λ (id) (with-syntax ([id id])
+                                           #'(hash-set! result 'id id)))
+                                 indexed-class-vars)]
+           [save-unsaved-list (map (λ (id) (with-syntax ([id id])
+                                             #'(hash-set! result 'id id)))
+                                   unsaved-class-vars)]
+           ;; List of syntaxes needed to load the saved-fields
+           [load-list (map (λ (id) (with-syntax ([id id])
+                                     #'(set! id (hash-ref vars 'id void))))
+                           saved-class-vars)]
+           [load-index-list (map (λ (id) (with-syntax ([id id])
+                                           #'(set! id (hash-ref vars 'id void))))
+                                 indexed-class-vars)]
+           [load-unsaved-list (map (λ (id) (with-syntax ([id id])
+                                             #'(set! id (hash-ref vars 'id void))))
+                                   unsaved-class-vars)])
+      (with-syntax ([(def-or-exp ... ) wrapped-def-or-exprs]
+                    [(var-save ...) save-list]
+                    [(index-save ...) save-index-list]
+                    [(unsaved-save ...) save-unsaved-list]
+                    [(var-load ...) load-list]
+                    [(index-load ...) load-index-list]
+                    [(unsaved-load ...) load-unsaved-list]
+                    [(interface-expr ...) interface-expr-list]
+                    [super-expression super-expression]
+                    [name name]
+                    [name/string (string-append "#<saved-object:" (symbol->string (syntax-e name)) ">")])
+        (syntax/loc orig-stx
+          (begin
+            (define name undefined)
+            (splicing-syntax-parameterize ([this/rackmud/param (syntax-id-rules () [_ (send this get-self)])])
+              (let ([ name/cid (database-get-cid! 'name (relative-module-path (filepath)))])
+                (set! name
+                      (class* (let ([se super-expression])
+                                (if (subclass? se saved-object%)
+                                    se
+                                    (raise-argument-error 'define-saved-class "(subclass?/c saved-object%)" se)))
+
+                        (interface-expr ...)
+                        (define/override (get-cid) name/cid)
+                        (define/override (save)
+                          (let ([result (super save)])
+                            var-save ...
+                            result))
+                        (define/override (save-index)
+                          (let ([result (super save-index)])
+                            index-save ...
+                            result))
+                        (define/override (copy-live-state)
+                          (let ([result (super copy-live-state)])
+                            var-save ...
+                            index-save ...
+                            unsaved-save ...
+                            result))
+                        (define/override (load vars)
+                          index-load ...
+                          var-load ...
+                          (super load vars))
+                        (define/override (load-live-state vars)
+                          var-load ...
+                          index-load ...
+                          unsaved-load ...
+                          (super load-live-state vars))
+                        (define/override (custom-display port)
+                          (display name/string port))
+                        ;   (splicing-syntax-parameterize ([this/rackmud (syntax-id-rules () [_ (get-self)])])
+                        def-or-exp ...))))
+            (provide name)))))))
 
                        
-
+#|
 (define-syntax (define-saved-class/priv stx)
   (syntax-case stx ()
     [(_ orig-stx name super-expression (interface-expr ...) body ...)
@@ -783,7 +873,7 @@
                                      (raise-argument-error 'define-saved-class "(subclass?/c saved-object%)" se)))
 
                          (interface-expr ...)
-
+                         (inherit get-self)
                          (define/override (get-cid) name/cid)
                          (define/override (save)
                            (let ([result (super save)])
@@ -810,8 +900,11 @@
                            (super load-live-state vars))
                          (define/override (custom-display port)
                            (display name/string port))
-                         def-or-exp ...)))
+                         ;(splicing-syntax-parameterize ([this (syntax-id-rules () [_ (get-self)])])
+                           def-or-exp ...)));)
                (provide name))))))]))
+|#
+
 
 
 #|||||||||||||||||||||||||||||||||||||||||||||||
