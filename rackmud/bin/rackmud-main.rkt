@@ -1,7 +1,7 @@
 #lang racket/base
 
 (define t0 (current-inexact-milliseconds))
-(require net/rfc6455 racket/tcp openssl "../main.rkt" telnet "../websock.rkt" telnet/charset "config.rkt" "new-setup.rkt" compiler/compiler
+(require net/rfc6455 racket/tcp openssl "../main.rkt" "../db.rkt" telnet "../websock.rkt" telnet/charset "config.rkt" "new-setup.rkt" compiler/compiler
          compiler/option racket/place racket/runtime-path)
 (define-namespace-anchor anc)
 
@@ -35,10 +35,26 @@
 (place-channel-put compiler-place mudlib/path)
 (place-channel-put compiler-place mudlib-collect)
 
+(define rackmud-logger (make-logger #f (current-logger) 'info #f))
+(define rackmud-log-rec (make-log-receiver (current-logger) 'debug 'rackmud 'debug 'grapevine 'warning))
+(current-logger rackmud-logger)
+
+
 (parameterize ([current-library-collection-paths (if mudlib/path
                                                      (cons  mudlib/path (current-library-collection-paths))
-                                                     (current-library-collection-paths))])
+                                                     (current-library-collection-paths))]
+               [current-logger rackmud-logger])
 
+  (define logger-thread
+        (thread
+         (λ ()
+           (let loop ()
+             (match (sync rackmud-log-rec)
+               [(vector level msg data topic)
+                (when (and (string? msg) (database-connected?))
+                  (database-log level (or topic "racket") msg (backtrace data)))])
+             (loop)))))
+  
   (define telnet-port (hash-ref cfg 'telnet:port #f))
   (define telnet-ssl-port (hash-ref cfg 'telnet:ssl-port #f))
   (define telnet-enabled? (port-number? telnet-port))

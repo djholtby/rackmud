@@ -6,7 +6,7 @@
 
 
 (require json)
-(require "objects.rkt")
+(require "objects.rkt" "db.rkt")
 (require telnet/connection)
 (require "scheduler.rkt")
 (require racket/rerequire)

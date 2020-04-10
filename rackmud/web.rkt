@@ -11,7 +11,9 @@
           net/rfc6455
           (for-syntax racket/base)
           racket/stxparam
+          racket/class
           "objects.rkt"
+          "db.rkt"
           )
 
 (provide (all-from-out web-server/http
@@ -26,15 +28,18 @@
                        ))
 
 
-(provide make-login-cookie validate-login-cookie auth-account protected-page authed-page logout-headers)
+(provide make-login-cookie expire-all-tokens validate-login-cookie auth-account protected-page authed-page logout-headers)
 
 (define login-cookie-name "rackmud-login-auth")
 (define redirect-cookie-name "rackmud-login-redirect")
 (define private-key (make-secret-salt/file "COOKIE"))
 
+(define (expire-all-tokens acct)
+  (database-expire-all-tokens (send acct get-id)))
+
 (define (make-login-cookie acct [expires "9999-01-01T00:00:00Z"] [secure? #f])
   (make-id-cookie login-cookie-name
-                  (database-make-token acct expires)
+                  (database-make-token (send acct get-id) expires)
                   #:key private-key
                   #:secure? secure?
                   #:http-only? #t))
@@ -43,7 +48,7 @@
   (define cookie-value (request-id-cookie request
                                           #:name login-cookie-name
                                           #:key private-key))
-  (and cookie-value (database-verify-token cookie-value)))
+  (and cookie-value (make-lazyref (database-verify-token cookie-value))))
                     
                     
 (define-syntax-parameter auth-account

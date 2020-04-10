@@ -25,6 +25,7 @@
          "pq.rkt"
          "scheduler.rkt"
          "logger.rkt"
+         "lib-path.rkt"
          )
 
 (provide
@@ -77,7 +78,10 @@
  (all-from-out "pq.rkt")
  (all-from-out "scheduler.rkt")
  (all-from-out "logger.rkt")
-  
+
+ ;; from lib-path.rkt
+ set-lib-path!
+ 
  (except-out (all-from-out "objects.rkt") 
              send/rackmud
              send*/rackmud
