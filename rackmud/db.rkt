@@ -3,51 +3,38 @@
 (require db racket/format gregor racket/match racket/list racket/set "lib-path.rkt" racket/rerequire uuid racket/string)
 
 (provide make-rackmud-db-connection make-rackmud-db-pool rackmud-db-version database-log
-         database-save-object database-new-object database-get-object database-find-indexed database-get-singleton database-make-singleton
+         database-save-object database-new-object database-get-object database-get-singleton database-make-singleton
          database-connected? database-disconnect database-get-cid! load-class file->cids set-database-connection!
-         database-make-token database-verify-token database-get-all-tokens database-expire-token database-expire-all-tokens)
+         database-make-token database-verify-token database-get-all-tokens database-expire-token database-expire-all-tokens
+         database-create-field-index database-get-field-index-ids
 
-(define (make-rackmud-db-pool db-type db-port db-sock db-srv db-db db-user db-pass)
+         field-search-array field-search-array/and field-search-array/or
+         field-search-op
+         field-search-table/key+value
+         field-search-table/key+value/list
+         database-start-transaction!
+         database-commit-transaction!
+         )
+
+(define (make-rackmud-db-pool db-port db-sock db-srv db-db db-user db-pass)
   (virtual-connection (connection-pool
-                       (λ () (make-rackmud-db-connection db-type db-port db-sock db-srv db-db db-user db-pass)))))
+                       (λ () (make-rackmud-db-connection db-port db-sock db-srv db-db db-user db-pass)))))
 
-(define (make-rackmud-db-connection db-type db-port db-sock db-srv db-db db-user db-pass)
-  (case db-type
-    [(mysql) (cond [(and db-sock (not db-srv) (not db-port))
-                    (mysql-connect
-                     #:user db-user
-                     #:database db-db
-                     #:socket db-sock
-                     #:password db-pass)]
-                   [(not db-sock)
-                    (mysql-connect
-                     #:user db-user
-                     #:database db-db
-                     #:server (if db-srv db-srv "localhost")
-                     #:port (if db-port db-port 3306)
-                     #:password db-pass)]
-                   [else (raise-arguments-error 'database-setup "cannot use both TCP and local socket!" "db-sock" db-sock "db-srv" db-srv "db-port" db-port)])]
-    [(postgres) (cond [(and db-sock (not db-srv) (not db-port))
-                       (postgresql-connect
-                        #:user db-user
-                        #:database db-db
-                        #:socket db-sock
-                        #:password db-pass)]
-                      [(not db-sock)
-                       (postgresql-connect
-                        #:user db-user
-                        #:database db-db
-                        #:server (if db-srv db-srv "localhost")
-                        #:port (if db-port db-port 5432)
-                        #:password db-pass)]
-                      [else (raise-arguments-error 'database-setup "cannot use both TCP and local socket!" "db-sock" db-sock "db-srv" db-srv "db-port" db-port)])]
-    [(sqlite3) (sqlite3-connect
-                #:database db-db)]
-    [(odbc) (odbc-connect
-             #:user db-user
-             #:dsn db-db
-             #:password db-pass)]
-    [else (raise-argument-error 'make-rackmud-db-connection "dbtype?" db-type)]))
+(define (make-rackmud-db-connection db-port db-sock db-srv db-db db-user db-pass)
+  (cond [(and db-sock (not db-srv) (not db-port))
+         (postgresql-connect
+          #:user db-user
+          #:database db-db
+          #:socket db-sock
+          #:password db-pass)]
+        [(not db-sock)
+         (postgresql-connect
+          #:user db-user
+          #:database db-db
+          #:server (if db-srv db-srv "localhost")
+          #:port (if db-port db-port 5432)
+          #:password db-pass)]
+        [else (raise-arguments-error 'database-setup "cannot use both TCP and local socket!" "db-sock" db-sock "db-srv" db-srv "db-port" db-port)]))
 
 (define (rackmud-db-version conn)
   (with-handlers ([exn:fail:sql? (lambda (e) #f)])
@@ -56,27 +43,13 @@
 
 (define _dbc_ #f)
 
-(define database-date-supported #t)
 
-(define (gregor->system-time-string g)
-  (~t (adjust-timezone g (current-timezone)) "YYYY/MM/dd HH:m:s.SSS"))
-
-(define (datetime->moment dt tz)
-  (moment (->year dt)
-          (->month dt)
-          (->day dt)
-          (->hours dt)
-          (->minutes dt)
-          (->seconds dt)
-          (->nanoseconds dt)
-          #:tz tz))
-
-(define (sql->gregor s)
+(define (sql->moment s)
   (match-define
     (sql-timestamp year month day hour minute second nanosecond tz) s)
   (moment year month day hour minute second nanosecond #:tz (or tz (current-timezone))))
 
-(define (gregor->sql g)
+(define (moment->sql g)
   (sql-timestamp (->year g)
                  (->month g)
                  (->day g)
@@ -86,164 +59,86 @@
                  (->nanoseconds g)
                  (->utc-offset g)))
 
-;; dbtime->srfi-date: (U SQL-TimeStamp Real) -> Date*
-(define (dbtime->moment v)
-  (if (sql-timestamp? v)
-      (sql->gregor v)
-      (datetime->moment (posix->datetime v) UTC)))
 
-(define (moment->dbtime d)
-  (if database-date-supported 
-      (gregor->sql d)
-      (->posix d)))
-
-
-(define (dbsys->config dbsys)
-  (case (dbsystem-name dbsys)
-    [(postgresql) (values #t #t)]
-    [(mysql) (values #f #t)]
-    [(sqlite3) (values #f #f)]
-    [else (error "Unsupported DB System")]))
-
+  
 (define object-load-stmt
   (virtual-statement
-   (λ (dbsys) (case (dbsystem-name dbsys)
-                [(postgresql) "SELECT cid, created, saved, name, deleted, fields FROM objects WHERE oid = $1"]
-                [else "SELECT cid, created, saved, name, deleted, fields FROM objects WHERE oid = ?"]))))
+   "SELECT cid, o.created, o.saved, od.fields FROM objects o INNER JOIN object_fields od ON (o.oid = $1) AND (od.oid = $1) AND (o.saved = od.saved)"))
+
 
 (define class-load-stmt
   (virtual-statement
-   (λ (dbsys) (case (dbsystem-name dbsys)
-                [(postgresql) "SELECT classname, module FROM classes WHERE cid = $1"]
-                [else "SELECT classname, module FROM classes WHERE cid = ?"]))))
+   "SELECT classname, module FROM classes WHERE cid = $1"))
+
                               
 (define get-classid-stmt
   (virtual-statement
-   (λ (dbsys) (case (dbsystem-name dbsys)
-                [(postgresql) "SELECT cid FROM classes WHERE classname = $1 AND module = $2"]
-                [else "SELECT cid FROM classes WHERE classname = ? AND module = ?"]))))
+   "SELECT get_cid($1, $2) as cid"))
 
-(define create-classid-stmt
+(define select-field-ids-statement
   (virtual-statement
-   (λ (dbsys) (case (dbsystem-name dbsys)
-                [(postgresql) "INSERT INTO classes (classname,module) VALUES ($1 , $2) RETURNING cid"]
-                [else "INSERT INTO classes (classname,module) VALUES (? , ?)"]))))
-    
-(define delete-fields-stmt
-  (virtual-statement
-   (λ (dbsys) (case (dbsystem-name dbsys)
-                [(postgresql) "DELETE FROM indexed_fields WHERE oid = $1"]
-                [else "DELETE FROM indexed_fields WHERE oid = ?"]))))
-(define delete-tags-stmt
-  (virtual-statement
-   (λ (dbsys) (case (dbsystem-name dbsys)
-                [(postgresql) "DELETE FROM tags WHERE oid = $1"]
-                [else "DELETE FROM tags WHERE oid = ?"]))))
+   "SELECT get_field_index($1, field_name) as idx FROM (SELECT unnest($2::text[]) as field_name) AS t"))
+
+
 (define new-object-stmt
   (virtual-statement
-   (λ (dbsys) (case (dbsystem-name dbsys)
-                [(postgresql) "INSERT INTO objects (cid, created, name, deleted) VALUES ($1, $2, $3, false) RETURNING oid"]
-                [(mysql) "INSERT INTO objects (cid, created, name, deleted) VALUES (?, ?, ?, false)"]
-                [else "INSERT INTO objects (cid, created, name, deleted) VALUES (?, ?, ?, 0)"]))))
-
-
+   "INSERT INTO objects (cid) VALUES ($1) RETURNING oid, created"))
 
 (define save-object-stmt
   (virtual-statement
-   (λ (dbsys) (case (dbsystem-name dbsys)
-                [(postgresql) "UPDATE objects SET name=$1, saved=$2, fields=$3 WHERE oid = $4"]
-                [else "UPDATE objects SET name=?, saved=?, fields=? WHERE oid = ?"]))))
-
-(define save-tag-stmt
-  (virtual-statement
-   (λ (dbsys) (case (dbsystem-name dbsys)
-                [(postgresql) "INSERT INTO tags (oid, category, tag) values (~a, ~a, ~a)"]
-                [else "INSERT INTO tags (oid, category, tag) values (?, ?, ?)"]))))
-
-(define save-field-stmt
-  (virtual-statement
-   (λ (dbsys) (case (dbsystem-name dbsys)
-                [(postgresql) "INSERT INTO indexed_fields (oid, field, value) values ($1, $2, $3)"]
-                [else "INSERT INTO indexed_fields (oid, field, value) values (?, ?, ?)"]))))
-
-(define load-tags-stmt
-  (virtual-statement
-   (λ (dbsys) (case (dbsystem-name dbsys)
-                [(postgresql) "SELECT category, tag FROM tags WHERE oid = $1"]
-                [else "SELECT category, tag FROM tags WHERE oid = ?"]))))
-
-(define load-fields-stmt
-  (virtual-statement
-   (λ (dbsys) (case (dbsystem-name dbsys)
-                [(postgresql)  "SELECT field, value FROM indexed_fields WHERE oid = $1"]
-                [else  "SELECT field, value FROM indexed_fields WHERE oid = ?"]))))
+   (string-append
+    "INSERT INTO object_fields (oid, fields) values ($1, $2)"
+    "ON CONFLICT (oid, saved) DO UPDATE SET fields = EXCLUDED.fields RETURNING saved")))
+;"UPDATE objects SET name=$1, saved=$2, fields=$3 WHERE oid = $4"))
 
 (define search-tags-stmt
   (virtual-statement
-   (λ (dbsys) (case (dbsystem-name dbsys)
-                [(postgresql) "SELECT oid FROM tags WHERE category = $1 AND tag = $2"]
-                [else "SELECT oid FROM tags WHERE category = ? AND tag = ?"]))))
+   (string-append "SELECT oid from object_fields WHERE fields->'tags'->$1->'value' @> $2 AND\n"
+                  "     EXISTS (SElECT 1 from objects where objects.saved = object_fields.saved)")))
 
-(define search-index-stmt
+(define search-field-stmt
   (virtual-statement
-   (λ (dbsys) (case (dbsystem-name dbsys)
-                [(postgresql) "SELECT oid FROM indexed_fields WHERE field = $1 AND value = $2"]
-                [else "SELECT oid FROM indexed_fields WHERE field = ? AND value = ?"]))))
-                                             
+   "SELECT oid FROM object_fields WHERE fields->$1 = $2 AND EXISTS (SELECT 1 FROM objects WHERE objects.saved = object_fields.saved)"))
+
+(define search-field-stmt/array
+  (virtual-statement
+   "SELECT oid FROM object_fields WHERE fields->$1 @> $2::jsonb AND EXISTS (SELECT 1 FROM objects WHERE objects.saved = object_fields.saved)"))
+
 (define get-singleton-stmt
   (virtual-statement
-   (λ (dbsys) (case (dbsystem-name dbsys)
-                [(postgresql) "SELECT oid FROM singletons WHERE cid = $1"]
-                [else "SELECT oid FROM singletons WHERE cid = ?"]))))
+   "SELECT oid FROM singletons WHERE cid = $1"))
 
 (define new-singleton-stmt
   (virtual-statement
-   (λ (dbsys) (case (dbsystem-name dbsys)
-                [(postgresql) "INSERT INTO singletons (oid, cid) values ($1, $2)"]
-                [else "INSERT INTO singletons (oid, cid) values (?, ?)"]))))
+   "INSERT INTO singletons (oid, cid) values ($1, $2)"))
                                                 
 (define log-stmt
   (virtual-statement
-   (λ (dbsys) (case (dbsystem-name dbsys)
-                [(postgresql) "INSERT INTO logfile (level, module, description, backtrace) values ($1, $2, $3, $4)"]
-                [else "INSERT INTO logfile (level, module, description, backtrace) values (?, ?, ?, ?)"]))))
+   "INSERT INTO logfile (level, module, description, backtrace) values ($1, $2, $3, $4)"))
 
 (define new-token-stmt
   (virtual-statement
-   (λ (dbsys) (case (dbsystem-name dbsys)
-                [(postgresql) "INSERT INTO auth (seq, token, oid, expires) values ($1, $2, $3, $4)"]
-                [else "INSERT INTO auth (seq, token, oid, expires) values (?, ?, ?, ?)"]))))
+   "INSERT INTO auth (seq, token, oid, expires) values ($1, $2, $3, $4)"))
 
 (define verify-auth-stmt
   (virtual-statement
-   (λ (dbsys) (case (dbsystem-name dbsys)
-                [(postgresql) "SELECT token, expires FROM auth WHERE seq = $1 and oid = $2"]
-                [else "SELECT token, expires FROM auth WHERE seq = ? and oid = ?"]))))
+   "SELECT token, expires FROM auth WHERE seq = $1 and oid = $2"))
 
 (define tokens-for-oid-stmt
   (virtual-statement
-   (λ (dbsys) (case (dbsystem-name dbsys)
-                [(postgresql) "SELECT seq FROM auth where oid = $1"]
-                [else "SELECT seq FROM auth where oid = ?"]))))
+   "SELECT seq FROM auth where oid = $1"))
 
 (define expire-token-stmt
-  (virtual-statement
-   (λ (dbsys) (case (dbsystem-name dbsys)
-                [(postgresql)  "DELETE FROM auth WHERE seq = $1"]
-                [else "DELETE FROM auth WHERE seq = ?"]))))
+  (virtual-statement "DELETE FROM auth WHERE seq = $1"))
 
 (define expire-all-tokens-stmt
   (virtual-statement
-   (λ (dbsys) (case (dbsystem-name dbsys)
-                [(postgresql)  "DELETE FROM auth WHERE oid = $1"]
-                [else "DELETE FROM auth WHERE oid = ?"]))))
+   "DELETE FROM auth WHERE oid = $1"))
 
 (define module-to-cid-query
   (virtual-statement
-   (λ (dbsys) (case (dbsystem-name dbsys)
-                [(postgresql) "SELECT cid from classes where module = $1"]
-                [else "SELECT cid from classes where module = ?"]))))
-  
+   "SELECT cid from classes where module = $1"))
+
 (define (database-connected?)
   (connection? _dbc_))
 
@@ -253,12 +148,8 @@
     (set! _dbc_ #f)))
 
 
-(define (set-database-connection! system pool)
+(define (set-database-connection! pool)
   (unless (connection? pool) (raise-argument-error 'set-database-connection! "connection?" pool))
-  (if (eq? system 'sqlite3) ;; TODO, does anything else not support timestamp???
-      (set! database-date-supported #f)
-      (set! database-date-supported #t))
-  
   (when _dbc_ (disconnect _dbc_))
   (set! _dbc_ pool))
 
@@ -292,6 +183,13 @@
     (disconnect _dbc_)
     (set! _dbc_ #f)))
 
+(define (database-start-transaction!)
+  (start-transaction _dbc_))
+
+(define (database-commit-transaction!)
+  (commit-transaction _dbc_))
+
+
 (define cid-map (make-hash))
 
 #|! 
@@ -302,16 +200,12 @@ database-get-cid! : Symbol Path -> Nat
 |#
 (define (database-get-cid! class-name module-name)
   (when (not (database-connected?)) (error 'database-get-cid "database not connected"))
-  (define cid (hash-ref cid-map (cons class-name module-name) (lambda () #f)))
+  (define cid (hash-ref cid-map (cons class-name module-name) #f))
   (unless cid
     (define class-string (symbol->string class-name))
     (define module-string (path->string module-name))
-    (set! cid (query-maybe-value _dbc_ get-classid-stmt class-string module-string))
-    (hash-set! cid-map (cons class-name module-name) cid)
-    (unless cid
-      (query-exec _dbc_ create-classid-stmt class-string module-string)
-      (set! cid (query-maybe-value _dbc_ get-classid-stmt class-string module-string))
-      (hash-set! cid-map (cons class-name module-name) cid)))
+    (set! cid (query-value _dbc_ get-classid-stmt module-string class-string))
+    (hash-set! cid-map (cons class-name module-name) cid))
   (unless cid (error 'database-get-cid! "could not find or create new classid"))
   cid)
 
@@ -331,82 +225,215 @@ database-get-cid! : Symbol Path -> Nat
     ;(mark-needed-reloads changes)
     %))
 
+(define (simplify-name s)
+  (list->string (reverse
+                 (foldl (λ (c acc)
+                          (cond [(char-alphabetic? c) (cons c acc)]
+                                [(char-numeric? c) (cons c acc)]
+                                [(eqv? c #\space) (cons #\_ acc)]
+                                [else acc]))
+                        empty
+                        (string->list (if (string? s) s (symbol->string s)))))))
+
+
+
+(define field-search-statement/?
+  (virtual-statement
+   (string-append "SELECT oid FROM object_fields WHERE fields#>$1 ? $2::jsonb AND EXISTS (SELECT 1 FROM objects WHERE\n"
+                  "     objects.oid = object_fields.oid AND objects.saved = object_fields.saved)")))
+
+
+(define field-search-statement/?&
+  (virtual-statement
+   (string-append "SELECT oid FROM object_fields WHERE fields#>$1 ?& $2 AND EXISTS (SELECT 1 FROM objects WHERE\n"
+                  "     objects.oid = object_fields.oid AND objects.saved = object_fields.saved)")))
+
+(define field-search-statement/?\|
+  (virtual-statement
+   (string-append "SELECT oid FROM object_fields WHERE fields#>$1 ?| $2 AND EXISTS (SELECT 1 FROM objects WHERE\n"
+                  "     objects.oid = object_fields.oid AND objects.saved = object_fields.saved)")))
+
+(define field-search-statement/@>
+  (virtual-statement
+   (string-append "SELECT oid FROM object_fields WHERE fields#>$1 @> $2 AND EXISTS (SELECT 1 FROM objects WHERE\n"
+                  "     objects.oid = object_fields.oid AND objects.saved = object_fields.saved)")))
+
+(define field-search-statement/=
+  (virtual-statement
+   (string-append "SELECT oid FROM object_fields WHERE fields#>$1 = $2 AND EXISTS (SELECT 1 FROM objects WHERE\n"
+                  "     objects.oid = object_fields.oid AND objects.saved = object_fields.saved)")))
+
+(define field-search-statement/!=
+  (virtual-statement
+   (string-append "SELECT oid FROM object_fields WHERE fields#>$1 != $2 AND EXISTS (SELECT 1 FROM objects WHERE\n"
+                  "     objects.oid = object_fields.oid AND objects.saved = object_fields.saved)")))
+
+(define field-search-statement/<
+  (virtual-statement
+   (string-append "SELECT oid FROM object_fields WHERE fields#>$1 < $2 AND EXISTS (SELECT 1 FROM objects WHERE\n"
+                  "     objects.oid = object_fields.oid AND objects.saved = object_fields.saved)")))
+
+(define field-search-statement/<=
+  (virtual-statement
+   (string-append "SELECT oid FROM object_fields WHERE fields#>$1 <= $2 AND EXISTS (SELECT 1 FROM objects WHERE\n"
+                  "     objects.oid = object_fields.oid AND objects.saved = object_fields.saved)")))
+
+(define field-search-statement/>
+  (virtual-statement
+   (string-append "SELECT oid FROM object_fields WHERE fields#>$1 > $2 AND EXISTS (SELECT 1 FROM objects WHERE\n"
+                  "     objects.oid = object_fields.oid AND objects.saved = object_fields.saved)")))
+
+(define field-search-statement/>=
+  (virtual-statement
+   (string-append "SELECT oid FROM object_fields WHERE fields#>$1 >= $2 AND EXISTS (SELECT 1 FROM objects WHERE\n"
+                  "     objects.oid = object_fields.oid AND objects.saved = object_fields.saved)")))
+
+(define field-search-statement/~
+  (virtual-statement
+   (string-append "SELECT oid FROM object_fields WHERE fields#>>$1 ~ $2 AND EXISTS (SELECT 1 FROM objects WHERE\n"
+                  "     objects.oid = object_fields.oid AND objects.saved = object_fields.saved)")))
+
+(define field-search-statement/~*
+  (virtual-statement
+   (string-append "SELECT oid FROM object_fields WHERE fields#>>$1 ~* $2 AND EXISTS (SELECT 1 FROM objects WHERE\n"
+                  "     objects.oid = object_fields.oid AND objects.saved = object_fields.saved)")))
+
+
+(define field-search-statement/!~
+  (virtual-statement
+   (string-append "SELECT oid FROM object_fields WHERE fields#>>$1 !~ $2 AND EXISTS (SELECT 1 FROM objects WHERE\n"
+                  "     objects.oid = object_fields.oid AND objects.saved = object_fields.saved)")))
+
+
+(define field-search-statement/!~*
+  (virtual-statement
+   (string-append "SELECT oid FROM object_fields WHERE fields#>>$1 !~* $2 AND EXISTS (SELECT 1 FROM objects WHERE\n"
+                  "     objects.oid = object_fields.oid AND objects.saved = object_fields.saved)")))
+
+(define field-search-statement/like
+  (virtual-statement
+   (string-append "SELECT oid FROM object_fields WHERE fields#>>$1 LIKE $2 AND EXISTS (SELECT 1 FROM objects WHERE\n"
+                  "     objects.oid = object_fields.oid AND objects.saved = object_fields.saved)")))
+
+
+(define field-search-statement/not-like
+  (virtual-statement
+   (string-append "SELECT oid FROM object_fields WHERE fields#>>$1 NOT LIKE$2 AND EXISTS (SELECT 1 FROM objects WHERE\n"
+                  "     objects.oid = object_fields.oid AND objects.saved = object_fields.saved)")))
+
+
+
+(define (valid-db-operator? v)
+  (memq v '(= != < > <= >= ~ !~ ~* !~*)))
+
+
+;; (listof Str) Sym JSExpr #t) -> (listof OID)
+;; (listof Str) JSExpr JSExpr #f) -> (listof OID)
+(define (field-search-table/key+value full-json-path key value #:symbol-table? [json-table? #t])
+  (if json-table?
+      (query-list _dbc_ field-search-statement/@> full-json-path (hasheq key value))
+      (query-list _dbc_ field-search-statement/@> full-json-path (hasheq 'key key 'value value))))
+
+(define (field-search-table/key+value/list full-json-path keys values #:symbol-table? [json-table? #t])
+  (if json-table?
+      (query-list _dbc_ field-search-statement/@> full-json-path (make-hasheq (map cons keys values)))
+      (query-list _dbc_ field-search-statement/@> full-json-path (map (λ (k v)
+                                                                        (hasheq 'key k 'value v))))))
+
+;; value: string
+
+(define (field-search-array full-json-path value)
+  (eprintf "~a\n" full-json-path)
+  (if (string? value)
+      (query-list _dbc_ field-search-statement/? full-json-path value)
+      (query-list _dbc_ field-search-statement/@> full-json-path value)))
+
+;; values (listof string)
+
+(define (field-search-array/and full-json-path values)
+  (if (andmap string? values)
+      (query-list _dbc_ field-search-statement/?& full-json-path values)
+      (query-list _dbc_ field-search-statement/@> full-json-path values)))
+
+;; values (listof string)
+
+(define (field-search-array/or full-json-path values)
+  (if (andmap string? values)
+      (query-list _dbc_ field-search-statement/?\| full-json-path values)
+      (error "field search OR mode requires string keys")))
+
+(define (field-search-op full-json-path op value)
+  (query-list _dbc_
+              (case op
+                [(=) field-search-statement/=]
+                [(!=) field-search-statement/!=]
+                [(<) field-search-statement/<]
+                [(<=) field-search-statement/<=]
+                [(>) field-search-statement/>]
+                [(>=) field-search-statement/>=]
+                [(like) field-search-statement/like]
+                [(not-like) field-search-statement/not-like]
+                [(~) field-search-statement/~]
+                [(!~) field-search-statement/!~]
+                [(~*) field-search-statement/~*]
+                [(!~*) field-search-statement/!~*]
+                [else (raise-argument-error 'field-search-table/op "valid-db-operator?" op)])
+              full-json-path
+              value))
+
+(define (database-create-field-index full-field-name [type 'simple] [depth 0])
+  (let ([index-name (simplify-name full-field-name)]
+        [search-path (string-join (map (λ (s) (format "'~a'" s)) (cons full-field-name (make-list depth "value"))) ", ")])
+    (case type
+      [(simple number string boolean char bytes moment object)
+       (query-exec
+        _dbc_
+        (format "CREATE INDEX IF NOT EXISTS object_field_~a ON object_fields USING BTREE ((fields#>array[~a])) WHERE ((fields#>array[~a])) IS NOT NULL"
+                index-name search-path search-path))]
+      [(list vector symbol-table set hash json)
+       (query-exec
+        _dbc_
+        (format "CREATE INDEX IF NOT EXISTS object_field_~a ON object_fields USING GIN ((fields#>array[~a])) WHERE ((fields#>array[~a])) IS NOT NULL"
+                index-name search-path search-path))]
+      [else (raise-argument-error 'database-create-field-index "(or/c 'simple 'json)" type)])))
+
+
+(define (guard-field-name field-name)
+  (list->string (filter (λ (c)
+                          (or (char-alphabetic? c)
+                              (char-numeric? c)
+                              (eqv? c #\-)))
+                        (string->list field-name))))
+
+(define (database-get-field-index-ids cid field-symbols)
+  (map (λ (name id)
+         (string->symbol (format "~a{~a}" (guard-field-name (symbol->string name)) id)))
+       field-symbols
+       (query-list _dbc_ select-field-ids-statement cid (map symbol->string field-symbols))))
+
+;; database-get-object: nat -> (values nat? moment? moment? jsexpr?)
+
 (define (database-get-object id)
-  (start-transaction _dbc_ #:isolation 'read-committed)
   (define obj (query-maybe-row _dbc_ object-load-stmt id))
-  (define tags (and obj (query-rows _dbc_ load-tags-stmt id)))
-  (define indexed-fields (and obj (map (λ (v)
-                                         (cons
-                                          (string->symbol (vector-ref v 0))
-                                          (vector-ref v 1)))
-                                       (query-rows _dbc_ load-fields-stmt id))))
-  (commit-transaction _dbc_)
-  ;loaded? cid created saved name tags indexed-fields/bytes
-   ;    cid, created, saved, name, deleted, fields
-  (if (and obj (or (eq? #f (vector-ref obj 4))
-                   (zero? (vector-ref obj 4))))
-      (values #t
-              (vector-ref obj 0)
-              (dbtime->moment (vector-ref obj 1))
-              (dbtime->moment (vector-ref obj 2))
-              (vector-ref obj 3)
-              tags
-              indexed-fields
-              (vector-ref obj 5))
-      (values #f #f #f #f #f #f #f #f)))
+  
+  ;    cid, created, saved, fields
+  (if obj
+      (values 
+       (vector-ref obj 0)
+       (sql->moment (vector-ref obj 1))
+       (sql->moment (vector-ref obj 2))
+       (vector-ref obj 3))
+              
+      (values #f #f #f #f)))
 
-(define (database-find-indexed index value)
+(define (database-save-object oid fields)
   (unless (database-connected?) (error "database not connected"))
-  (query-rows _dbc_ search-index-stmt index value))
+  (sql->moment (query-value _dbc_ save-object-stmt oid fields)))
 
-
-(define (database-save-object oid name indexed-fields saved fields tags)
-  (unless (database-connected?) (error "database not connected"))
-  (let loop ()
-    (start-transaction _dbc_)
-    (with-handlers ([(λ (e) #t) (λ (e)
-                                  (rollback-transaction _dbc_)
-                                  #f)])
-      (query-exec _dbc_ delete-fields-stmt oid)
-      (query-exec _dbc_ delete-tags-stmt oid)
-      ; Save / Update the object itself
-      (query-exec _dbc_ save-object-stmt name (moment->dbtime saved) fields oid)
-      ; Save the indexed fields
-      (for ([(field value) (in-hash indexed-fields)])
-        (define value/port (open-output-bytes))
-        (write value value/port)
-        (query-exec _dbc_ save-field-stmt oid (symbol->string field) (get-output-bytes value/port))
-        (close-output-port value/port))
-      ; Save the tags
-      (for* ([(category tags)
-              (in-hash tags)]
-             [tag (in-set tags)])
-        (query-exec _dbc_ save-tag-stmt oid category tag))
-      ; That's all, folks
-      (with-handlers ([exn:fail:sql?
-                       (λ (e)
-                         (match (exn:fail:sql-sqlstate e)
-                           [#rx"^40...$" (loop)]
-                           ['done (loop)]
-                           [else (raise e)]))])
-        (commit-transaction _dbc_)
-        #t))))
-
-
-
-(define (database-new-object cid created name)
-  (define new-obj-result (query _dbc_ new-object-stmt cid (moment->dbtime created) name))
-  (cond [(and (simple-result? new-obj-result) (assoc 'insert-id (simple-result-info new-obj-result)))
-         (cdr (assoc 'insert-id (simple-result-info new-obj-result)))]
-        [(and (rows-result? new-obj-result)
-              (= 1 (length (rows-result-headers new-obj-result)))
-              (= 1 (length (rows-result-rows new-obj-result))))
-         (vector-ref (first (rows-result-rows new-obj-result)) 0)]
-        [else (error 'new "unexpected database result (~v) when instantiating new object" new-obj-result)]))
-
-
-
-
+(define (database-new-object cid)
+  (let ([response (query-row _dbc_ new-object-stmt cid)])
+    (values (vector-ref response 0)
+            (sql->moment (vector-ref response 1)))))
 
 (define (database-make-token oid #:expires [expires "9999-01-01T00:00:00Z"])
   (define seq (uuid-string))
