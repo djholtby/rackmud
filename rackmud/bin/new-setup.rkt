@@ -1,7 +1,7 @@
 #lang racket/base
 
-(require racket/string racket/match racket/format racket/list racket/class racket/tcp "../menu.rkt" "../db.rkt" "config.rkt" telnet/charset racket/undefined db/base racket/pretty
-         racket/runtime-path racket/file
+(require racket/string racket/match racket/format racket/list racket/class racket/tcp "../menu.rkt" "../db.rkt" "config.rkt"
+         telnet/charset racket/undefined db/base racket/pretty racket/runtime-path racket/file
          (for-syntax racket/base))
 
 (provide rackmud-configure)
@@ -31,15 +31,11 @@
                (map string-trim
                     (string-split (file->string file) ";")))))
 
-(define-runtime-paths [postgres-path mysql-path sqlite3-path]
-  (values "data/postgre.sql" "data/mysql.sql" "data/sqlite.sql"))
+;(define-runtime-paths [postgres-path mysql-path sqlite3-path]
+;  (values "data/postgre.sql" "data/mysql.sql" "data/sqlite.sql"))
 
-(define (dbtype->path type)
-  (case type
-    [(postgres) postgres-path]
-    [(mysql) mysql-path]
-    [(sqlite3) sqlite3-path]
-    [else #f]))
+(define-runtime-path sql-script-path "data/rackmud_create.sql")
+(define database-create-statements (file->statements sql-script-path))
 
 (define (cfg->conn cfg)
   (define db-type (hash-ref cfg 'database:type #f))
@@ -61,8 +57,7 @@
 (define (load-db-schema cfg)
   (define type (hash-ref cfg 'database:type #f))
   (define conn (cfg->conn cfg))
-  (define statements (file->statements (dbtype->path type)))
-  (for ([statement (in-list statements)])
+  (for ([statement (in-list database-create-statements)])
     (query-exec conn statement))
   (disconnect conn))
     
@@ -178,38 +173,26 @@
      (unless (string=? fn default-config-name)
        (hash-set! error-flags 'filename '("\e[33;1m[Not Default]\e[0m")))])
   
-  (match (hash-ref cfg 'database:type #f)
-    [#f (displayln "* database type not set" out)
-        (hash-set! error-flags 'database:type "Required")]
-    [(or 'postgres 'mysql)
-     (unless (string? (hash-ref cfg 'database:username #f))
-       (displayln "* database user not set" out)
-       (hash-set! error-flags 'database:username "Required"))
-     (unless (string? (hash-ref cfg 'database:database #f))
-       (displayln "* database not set" out)
-       (hash-set! error-flags 'database:database "Required"))
-     (when (and (or (hash-ref cfg 'database:server #f)
-                    (hash-ref cfg 'database:port #f))
-                (hash-ref cfg 'database:socket #f))
-       (displayln "* database set to both TCP and local socket" out)
-       (hash-set! error-flags 'database:socket "TCP / Socket Mutually Exclusive")
-       (when (hash-ref cfg 'database:server #f)
-         (hash-set! error-flags 'database:server "TCP / Socket Mutually Exclusive"))
-       (when (hash-ref cfg 'database:port #f)
-         (hash-set! error-flags 'database:port "TCP / Socket Mutually Exclusive")))
-     
-     (when (and (hash-ref cfg 'database:port #f)
-                (not (port-number? (hash-ref cfg 'database:port #f))))
-       (displayln "* database port is not a valid port number" out)
-       (hash-set! error-flags 'database:port "Invalid Port"))]
-     ['sqlite3
-      (cond [(not (hash-ref cfg 'database:database #f))
-             (displayln "* database not set" out)
-             (hash-set! error-flags 'database:database "Required")]
-            [(not (and (path-string? (hash-ref cfg 'database:database))
-                       (file-exists? (hash-ref cfg 'database:database))))
-             (displayln "* database file not found" out)
-             (hash-set! error-flags 'database:database "File Not Found")])])
+  (unless (string? (hash-ref cfg 'database:username #f))
+    (displayln "* database user not set" out)
+    (hash-set! error-flags 'database:username "Required"))
+  (unless (string? (hash-ref cfg 'database:database #f))
+    (displayln "* database not set" out)
+    (hash-set! error-flags 'database:database "Required"))
+  (when (and (or (hash-ref cfg 'database:server #f)
+                 (hash-ref cfg 'database:port #f))
+             (hash-ref cfg 'database:socket #f))
+    (displayln "* database set to both TCP and local socket" out)
+    (hash-set! error-flags 'database:socket "TCP / Socket Mutually Exclusive")
+    (when (hash-ref cfg 'database:server #f)
+      (hash-set! error-flags 'database:server "TCP / Socket Mutually Exclusive"))
+    (when (hash-ref cfg 'database:port #f)
+      (hash-set! error-flags 'database:port "TCP / Socket Mutually Exclusive")))
+  
+  (when (and (hash-ref cfg 'database:port #f)
+             (not (port-number? (hash-ref cfg 'database:port #f))))
+    (displayln "* database port is not a valid port number" out)
+    (hash-set! error-flags 'database:port "Invalid Port"))
   
   (match (hash-ref cfg 'mudlib-collect #f)
     [#f (displayln "* mudlib collection not set" out)
@@ -348,17 +331,13 @@
 
 
 (define (display-database-settings config-table error-table out counter int->setting)
-  (define type (hash-ref config-table 'database:type #f))
-  (config-option out 'database:type counter int->setting config-table error-table #:format none-fmt)
-  (cond [(memq type '(postgres mysql))
-         (config-option out 'database:database counter int->setting config-table error-table #:format none-fmt)
-         (config-option out 'database:username counter int->setting config-table error-table #:format none-fmt)
-         (config-option out 'database:password counter int->setting config-table error-table #:format password-fmt)
-         (config-option out 'database:server counter int->setting config-table error-table #:format default-fmt)
-         (config-option out 'database:port counter int->setting config-table error-table #:format default-fmt)
-         (config-option out 'database:socket counter int->setting config-table error-table #:format none-fmt)]
-        [(eq? type 'sqlite3)
-         (config-option out 'database:database counter int->setting config-table error-table #:format none-fmt)]))
+  (config-option out 'database:database counter int->setting config-table error-table #:format none-fmt)
+  (config-option out 'database:username counter int->setting config-table error-table #:format none-fmt)
+  (config-option out 'database:password counter int->setting config-table error-table #:format password-fmt)
+  (config-option out 'database:server counter int->setting config-table error-table #:format default-fmt)
+  (config-option out 'database:port counter int->setting config-table error-table #:format default-fmt)
+  (config-option out 'database:socket counter int->setting config-table error-table #:format none-fmt))
+
        
 (define (display-web-settings config-table error-table out counter int->setting)
   (define http (hash-ref config-table 'webserver:port #f))
@@ -423,7 +402,7 @@
 (define new-install-menu%
   (make-menu
    [start
-    [(transmit "Would you like to create one now?\n") #f]
+    [(transmit "Configuration file not found.\nWould you like to create one now?\n") #f]
     [(match (string-foldcase msg)
        [(pregexp #px"^\\s*y(a|eah|es)?\\s*$") 'confirm-settings]
        [(pregexp #px"^\\s*(n(o|ah|ope)?)?\\s*$")
@@ -458,7 +437,8 @@
     [(transmit (format "Connected to database (version=~a)\n" (hash-ref vars 'database-version))) 'confirm-mudlib]
     [(error 'upgrade-db "not implemented")]] ; TODO - upgrade scripts 
    [configure-database
-    [(transmit "Connected to database, but no rackmud scheme was found.  Create tables now? (Y / N)\n") #f]
+    [(transmit "Connected to database, but no rackmud schema was found.  Create tables now? (Y / N)\n"
+               "Note: rackmud requires uuid-ossp.  A postgres superuser must install this module first.\n") #f]
     [(match (string-foldcase msg)
        [(pregexp #px"^\\s*y(a|eah|es)?\\s*$") (load-db-schema (hash-ref vars 'config)) 'confirm-mudlib]
        [(pregexp #px"^\\s*(n(o|ah|ope)?)?\\s*$") 'save-verification]
@@ -473,39 +453,15 @@
        [(pregexp #px"^\\s*y(a|eah|es)?\\s*$") (save-config vars) (transmit #t)]
        [(pregexp #px"^\\s*(n(o|ah|ope)?)?\\s*$") 'confirm-settings]
        [else 'save-verification])]]
-   [database:type
-    [(transmit "Select database type (postgres, mysql, sqlite3) or press [enter] to leave unchanged\n") #f]
-    [(define cfg (hash-ref vars 'config))
-     (match (string-foldcase (string-trim msg))
-       ["postgres" (hash-set! cfg 'database:type 'postgres) 'confirm-settings]
-       ["mysql" (hash-set! cfg 'database:type 'mysql) 'confirm-settings]
-       ["sqlite3" (hash-set! cfg 'database:type 'sqlite3) 'confirm-settings]
-       ["" 'confirm-settings]
-       [else (transmit "invalid selection\n") 'database:type])]]
    [database:database
-    [(if (eq? (hash-ref (hash-ref vars 'config) 'database:type) 'sqlite3)
-         (transmit "Enter sqlite3 file name, or press [Enter] to leave unchanged\n")
-         (transmit "Enter database name, or press [Enter] to leave unchanged\n")) #f]
+    [(transmit "Enter database name, or press [Enter] to leave unchanged\n")]
     [(define cfg (hash-ref vars 'config))
-     (define type (hash-ref cfg 'database:type))
      (define tmsg (string-trim msg))
-     (define dpath (pathstring->filename tmsg))
-     (cond [(string=? tmsg "") 'confirm-settings]
-           [(not (eq? type 'sqlite3))
-            (hash-set! cfg 'database:database tmsg)
-            'confirm-settings]
-           [dpath
-            (hash-set! cfg 'database:database tmsg)
-            (if (file-exists? tmsg) 'confirm-settings 'create-sqlite3-file)]
-           [(transmit "File not found!\n") 'database:database])]]
-   [create-sqlite3-file
-    [(transmit "sqlite3 file not found.  Create one now? (Y/N, or [enter] to reenter file name)\n") #f]
-    [(match (string-foldcase msg)
-       ["" 'database:database]
-       [(pregexp #px"^\\s*y(a|eah|es)?\\s*$") (touch (hash-ref (hash-ref vars 'config) 'database:database)) 'confirm-settings]
-       [(pregexp #px"^\\s*(n(o|ah|ope)?)?\\s*$") 'confirm-settings]
-       [else #f])]]
-   
+     (if (string=? tmsg "")
+         'confirm-settings
+         (begin
+           (hash-set! cfg 'database:database tmsg)
+           'confirm-settings))]]
    [database:username
     [(transmit "Enter database username, or press [Enter] to leave unchanged\n") #f]
     [(define cfg (hash-ref vars 'config))
@@ -534,18 +490,15 @@
            [(port-number? (string->number tmsg)) (hash-set! cfg 'database:port (string->number tmsg)) 'confirm-settings]
            [else (transmit "Enter a valid port number, or #f\n") #f])]]
    [database:socket
-    [(if (eq? (hash-ref (hash-ref vars 'config) 'database:type) 'postgres)
-         (transmit "Enter system socket for postgres connection, or 'guess, or #f if not using a system socket\n")
-         (transmit "Enter system socket for mysql connection, or #f if not using a system socket\n"))]
+    [(transmit "Enter system socket for postgres connection, 'guess to attempt to guess the socket, or #f if not using a system socket\n")]
     [(define cfg (hash-ref vars 'config))
-     (define type (hash-ref cfg 'database:type))
      (define tmsg (string-trim msg))
      (cond [(string=? tmsg "") 'confirm-settings]
            [(string=? tmsg "#f") (hash-set! cfg 'database:socket #f) 'confirm-settings]
-           [(and (eq? type 'postgres) (string=? tmsg "'guess"))
+           [(string=? tmsg "'guess")
             (hash-set! cfg 'database:socket 'guess) 'confirm-settings]
            [(path-string? tmsg) (hash-set! cfg 'database:socket tmsg) 'confirm-settings]
-           [else (transmit "Enter a valid socket path, or #f\n") #f])]]
+           [else (transmit "Enter a valid socket path, 'guess, or #f\n")])]]
    [mudlib-collect
     [(transmit "Enter the collection name for the mudlib\n\e[33m[The default is \"mudlib\" and that's not a bad choice]\e[0m\n") #f]
     [(define cfg (hash-ref vars 'config))

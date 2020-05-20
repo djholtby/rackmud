@@ -24,8 +24,8 @@ LANGUAGE plpgsql;
 CREATE TABLE objects (
 	oid BIGSERIAL UNIQUE NOT NULL,
 	cid INT NOT NULL REFERENCES classes,
-	created TIMESTAMP NOT NULL DEFAULT now(),
-	saved TIMESTAMP,
+	created TIMESTAMPTZ NOT NULL DEFAULT now(),
+	saved TIMESTAMPTZ,
 	PRIMARY KEY (oid)
 );
 
@@ -33,8 +33,8 @@ CREATE INDEX objects_by_ver ON objects (saved);
 
 CREATE TABLE field_index_names (
 	fid SERIAL UNIQUE NOT NULL,
-	cid int NOT NULL REFERENCES classes,
-	field_name text NOT NULL,
+	cid INT NOT NULL REFERENCES classes,
+	field_name TEXT NOT NULL,
 	PRIMARY KEY (fid)
 );
 
@@ -61,8 +61,8 @@ LANGUAGE plpgsql;
 
 CREATE TABLE object_fields (
        oid BIGINT REFERENCES objects,
-       saved timestamp NOT NULL DEFAULT now(),
-       fields jsonb,
+       saved TIMESTAMPTZ NOT NULL DEFAULT now(),
+       fields JSONB,
        PRIMARY KEY (oid, saved)
 );
 
@@ -83,17 +83,17 @@ CREATE TRIGGER trig_version_update AFTER INSERT ON object_fields
 
 
 CREATE TABLE singletons (
-   cid int UNIQUE NOT NULL REFERENCES classes,
-   oid bigint UNIQUE NOT NULL REFERENCES objects,
+   cid INT UNIQUE NOT NULL REFERENCES classes,
+   oid BIGINT UNIQUE NOT NULL REFERENCES objects,
    PRIMARY KEY(cid)
 );
 
 CREATE TABLE logfile (
-  time timestamp NOT NULL default NOW(),
-  level smallint NOT NULL,
-  module text,
-  description text,
-  backtrace text
+  time TIMESTAMPTZ NOT NULL default NOW(),
+  level SMALLINT NOT NULL,
+  module TEXT,
+  description TEXT,
+  backtrace TEXT
 );
 
 CREATE INDEX on logfile (time desc);
@@ -101,19 +101,21 @@ CREATE INDEX on logfile (level);
 CREATE INDEX on logfile (module);
 
 CREATE TABLE auth (
-   seq uuid NOT NULL,
-   token char(64) NOT NULL,
-   oid bigint NOT NULL REFERENCES objects,
-   expires timestamp NOT NULL,
+   seq UUID NOT NULL DEFAULT uuid_generate_v1mc(),
+   sig BYTEA NOT NULL,
+   oid BIGINT NOT NULL REFERENCES objects,
+   issued TIMESTAMPTZ NOT NULL DEFAULT now(),
+   expires TIMESTAMPTZ,
    PRIMARY KEY(seq)
 );  
 
-CREATE INDEX ON auth (oid);
+CREATE INDEX ON auth USING btree(oid);
+CREATE INDEX ON auth USING btree(expires) WHERE expires IS NOT NULL;
 
 CREATE TABLE metadata (
-  id text NOT NULL UNIQUE,
-  val jsonb NOT NULL,
+  id TEXT NOT NULL UNIQUE,
+  val JSONB NOT NULL,
   PRIMARY KEY(id)
 );
 
-INSERT INTO metadata values ('database-version', '2'::jsonb);
+INSERT INTO metadata VALUES ('database-version', '2'::jsonb);

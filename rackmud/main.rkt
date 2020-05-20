@@ -26,6 +26,7 @@
          "scheduler.rkt"
          "logger.rkt"
          "lib-path.rkt"
+         "connections.rkt"
          )
 
 (provide
@@ -78,6 +79,7 @@
  (all-from-out "pq.rkt")
  (all-from-out "scheduler.rkt")
  (all-from-out "logger.rkt")
+ (all-from-out "connections.rkt")
 
  ;; from lib-path.rkt
  set-lib-path!

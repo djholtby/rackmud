@@ -6,20 +6,21 @@
 
 (require gregor versioned-box json net/base64)
 
-(require "db.rkt" "lib-path.rkt")
+(require "db.rkt" "lib-path.rkt" "backtrace.rkt") 
 
 (provide saved-object% define-saved-class* define-saved-class 
          define-saved-mixin)
 
 (provide temp-object%)
 
-(provide trigger-reload! backtrace save-all-objects lazy-ref lazy-ref? touch! make-lazyref save-object get-singleton
+(provide trigger-reload! save-all-objects lazy-ref lazy-ref? touch! make-lazyref save-object get-singleton
          database-setup new/rackmud rackmud-mark-reloads
          instantiate/rackmud make-object/rackmud send/rackmud send*/rackmud get-field/rackmud set-field!/rackmud is-a?/rackmud is-a?/c/rackmud
          object?/rackmud object=?/rackmud object-or-false=?/rackmud object->vector/rackmud object-interface/rackmud
          object-method-arity-includes?/rackmud field-names/rackmud object-info/rackmud dynamic-send/rackmud
          send/keyword-apply/rackmud send/apply/rackmud dynamic-get-field/rackmud dynamic-set-field!/rackmud field-bound?/rackmud
-         class-field-accessor/rackmud class-field-mutator/rackmud this/rackmud)
+         class-field-accessor/rackmud class-field-mutator/rackmud this/rackmud
+         make-auth-token verify-auth-token get-all-auth-tokens expire-auth-token expire-all-auth-tokens)
 
 
 (define class-dep-sema (make-semaphore 1))
@@ -365,10 +366,12 @@
   (object-record (make-weak-box (box o)) (mutable-seteq) (make-semaphore 1) (make-semaphore 1) #f))
 (define null-record (object-record (make-weak-box #f) #f #f #f #f))
 
+;; get-object-record : SavedObject -> ObjectRecord
+
 (define (get-object-record o)
   (semaphore-wait object-table/semaphore)
   (let ([orec (hash-ref! object-table
-                         (if (lazy-ref? o) (lazy-ref-id o) (send o get-id))
+                         (send o get-id)
                          (λ () (make-object-record o)))])
     (update-cid-record (send o get-cid) orec)
     (semaphore-post object-table/semaphore)
@@ -404,7 +407,7 @@
          (loop))))))
          
 (define (trigger-reload! o)
-  (thread-send object-reload-thread (list (get-object-record o))))
+  (thread-send object-reload-thread (list (get-object-record (maybe-lazy-deref o)))))
 
 (define (rackmud-mark-reloads changed-files)
   (thread-send object-reload-thread
@@ -452,7 +455,7 @@
 (define saveable<%> (interface () save save-index load on-create on-load on-hot-reload copy-live-state load-live-state updated
                       set-id! get-cid get-self get-id))
 
-(define saved-object% (class* object% (writable<%> saveable<%> equal<%>)
+(define saved-object% (class* object% (saveable<%> equal<%>)
                         (super-new)
                         (init [id (void)])
                         (define _id_ id)
@@ -516,11 +519,7 @@
                         ; (load flds) initializes each field with the values in the given hash map
                         (define/public (load flds) (void))
 
-                        (define/public (custom-write port)
-                          (fprintf port "#<saved-object:~a>" (object-name this%)))
-                          
-                        (define/public (custom-display port)
-                          (fprintf port "#<saved-object:~a>" (object-name this%)))
+                      
 
                         ;; (updated) notes that the object has been updated just now (call this any time you change the object outside of
                         ;;  set-field! which already does this)
@@ -1175,7 +1174,35 @@
                 (hash-set! class-to-cid-table name cid)
                 ))))))))
 
-                       
+
+
+
+#|||||||||||||||||||||||||||||||||||||||||||||||
+                 WEBAUTH STUFF
+||||||||||||||||||||||||||||||||||||||||||||||||#
+
+(define (make-auth-token obj [expires #f])
+  (let [(oid (lazy-ref-id obj))]
+    (if expires
+        (database-make-token oid #:expires (moment->iso8601 expires))
+        (database-make-token oid))))
+
+
+(define (verify-auth-token text)
+  (let ([maybe-oid (database-verify-token text)])
+    (and maybe-oid (lazy-ref maybe-oid #f))))
+
+
+(define (get-all-auth-tokens obj)
+  (database-get-all-tokens (lazy-ref-id obj)))
+
+
+(define (expire-auth-token obj seq)
+  (database-expire-token (lazy-ref-id obj) seq))
+
+
+(define (expire-all-auth-tokens obj)
+  (database-expire-all-tokens (lazy-ref obj)))
 
 #|||||||||||||||||||||||||||||||||||||||||||||||
                  DATABASE STUFF
@@ -1197,17 +1224,6 @@
 (define (database-setup db-type db-port db-sock db-srv db-db db-user db-pass)
   (set-database-connection! (make-rackmud-db-pool db-port db-sock db-srv db-db db-user db-pass)))
    
-(define (backtrace cms)
-  (cond [(continuation-mark-set? cms)
-         (let ([out (open-output-string)])
-           (for ([context (in-list (continuation-mark-set->context cms))])
-             (displayln (format "~a : ~a" (or (car context) "???") (if (srcloc? (cdr context)) (srcloc->string (cdr context))
-                                                                       "No source information available")) out))
-           (get-output-string out))]
-        [(exn? cms)
-         (backtrace (exn-continuation-marks cms))]
-        [else #f]))
-
 
 (define (hot-reload old-object)
   (let ([new-object (new (load-class (send old-object get-cid))

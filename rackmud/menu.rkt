@@ -1,6 +1,8 @@
 #lang racket/base
 
-(require (for-syntax racket/base) racket/class racket/contract racket/bool racket/list racket/stxparam "objects.rkt" telnet/connection)
+(require (for-syntax racket/base) racket/class racket/contract racket/bool racket/list racket/stxparam "objects.rkt" "connections.rkt"
+         "master.rkt"
+         telnet/connection racket/match)
 
 (provide vars (rename-out [transmit/param transmit] [set-state!/param set-state!] ) msg make-menu menu% new-telnet-menu)
 
@@ -16,10 +18,10 @@
     
 
 (define menu%
-  (class* temp-object% (conn<%>)
+  (class* temp-object% (inner-connection<%>)
     (super-new)
     (init-field [state #f]
-                [transmit-func void])
+                [outer-conn #f])
     (init [vars (make-hasheq)])
     (field [vars-field vars])
           
@@ -28,14 +30,26 @@
     (define/public (connected?) #t)
     
     (define/public (transmit . messages)
-      (apply transmit-func messages))
+      (when outer-conn (send outer-conn transmit . messages))
+      (void))
 
     (define/public (receive message)
       (when (string? message)
         (define new-state (delta message))
         (when (symbol? new-state)
           (set-state! new-state))))
-  
+
+    (define (set-outer-connection/private oc new-vars [new-state #f] [delay #f])
+      (set! outer-conn oc)
+      (set! vars-field new-vars)
+      (when new-state
+        (if delay
+            (queue-event delay (send this set-state! new-state))
+            (send this set-state! new-state))))
+    
+    (define/public (set-outer-connection oc . rest)
+      (apply set-outer-connection/private oc rest))
+      
     (define/public (set-state! new-state #:allow-epsilon? [allow-epsilon? #t] #:trigger? [trigger? #t])
       (set! state new-state)
       (when trigger?
@@ -56,10 +70,9 @@
 
 (define (new-telnet-menu menu-class% tn [vars (make-hasheq)])
   (define new-vars (hash-copy vars))
-  (hash-set! new-vars 'terminal tn)
   (define new-menu
     (new menu-class%
-         [transmit-func (λ messages (send tn transmit . messages))]
+         [outer-conn  tn]
          [vars new-vars]))
   new-menu)
 

@@ -118,11 +118,11 @@
 
 (define new-token-stmt
   (virtual-statement
-   "INSERT INTO auth (seq, token, oid, expires) values ($1, $2, $3, $4)"))
+   "INSERT INTO auth (token, oid, expires) values ($1, $2, $3) RETURNING seq"))
 
 (define verify-auth-stmt
   (virtual-statement
-   "SELECT token, expires FROM auth WHERE seq = $1 and oid = $2"))
+   "SELECT oid, token, expires FROM auth WHERE seq = $1"))
 
 (define tokens-for-oid-stmt
   (virtual-statement
@@ -435,23 +435,23 @@ database-get-cid! : Symbol Path -> Nat
     (values (vector-ref response 0)
             (sql->moment (vector-ref response 1)))))
 
-(define (database-make-token oid #:expires [expires "9999-01-01T00:00:00Z"])
+(define (database-make-token oid #:expires [expires (moment 99999)])
   (define seq (uuid-string))
   (define token (uuid-string))
-  (query-exec _dbc_ new-token-stmt seq (sha256-bytes (string->bytes/utf-8 token)) oid expires)
-  (string-append oid ":" seq ":" token))
+  (query-exec _dbc_ new-token-stmt seq (sha256-bytes (string->bytes/utf-8 token)) oid (moment->sql expires))
+  (string-append seq ":" token))
 
 (define (database-verify-token text)
   (match-define
-    (list oid seq token)
+    (list seq token)
     (string-split text ":"))
-  (define result (query-rows _dbc_ verify-auth-stmt seq oid))
-  (and (cons? result)
+  (define result (query-maybe-row _dbc_ verify-auth-stmt seq))
+  (and result
        (moment<? (now/moment/utc)
-                 (iso8601->moment (vector-ref result 1)))
-       (bytes=? (string->bytes/utf-8 (vector-ref result 0))
+                 (sql->moment (vector-ref result 2)))
+       (bytes=? (vector-ref result 1)
                 (sha256-bytes (string->bytes/utf-8 token)))
-       oid))
+       (vector-ref result 0)))
 
 (define (database-get-all-tokens oid)
   (query-list _dbc_ tokens-for-oid-stmt oid))

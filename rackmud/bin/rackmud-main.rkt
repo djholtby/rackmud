@@ -1,8 +1,9 @@
 #lang racket/base
 
 (define t0 (current-inexact-milliseconds))
-(require net/rfc6455 racket/tcp openssl "../main.rkt" "../db.rkt" telnet "../websock.rkt" telnet/charset "config.rkt" "new-setup.rkt" compiler/compiler
-         compiler/option racket/place racket/runtime-path)
+(require net/rfc6455 racket/tcp openssl telnet telnet/charset racket/place racket/runtime-path
+         "../main.rkt" "../backtrace.rkt" "../db.rkt"  "../websock.rkt"  "../connections.rkt" "config.rkt" "new-setup.rkt"
+         )
 (define-namespace-anchor anc)
 
 
@@ -17,6 +18,12 @@
   (set! cfg (rackmud-configure cfg))
   (unless cfg
     (exit 1)))
+
+(define custom-telnet%
+  (conn-mixin telnet-conn%))
+
+(define custom-websock%
+  (conn-mixin websock-terminal%))
 
 (define mudlib (hash-ref cfg 'mudlib-path #f))
 (define mudlib/path (and mudlib (path->complete-path (path->directory-path (simplify-path (string->path mudlib))))))
@@ -125,13 +132,7 @@
   (load-master-object! resolved-collect
                        (string->symbol (hash-ref cfg 'master-classname "custom-master%")))
   
-  (define custom-telnet%
-    ((send master-object get-connection-mixin)
-     telnet-conn%))
 
-  (define custom-websock%
-    ((send master-object get-connection-mixin)
-     websock-terminal%))
   
   (printf "loaded in ~vms\n" (round (inexact->exact (- (current-inexact-milliseconds) t0))))
   ;(define custom-websock%
