@@ -34,7 +34,8 @@
           #:server (if db-srv db-srv "localhost")
           #:port (if db-port db-port 5432)
           #:password db-pass)]
-        [else (raise-arguments-error 'database-setup "cannot use both TCP and local socket!" "db-sock" db-sock "db-srv" db-srv "db-port" db-port)]))
+        [else (raise-arguments-error 'database-setup
+                                     "cannot use both TCP and local socket!" "db-sock" db-sock "db-srv" db-srv "db-port" db-port)]))
 
 (define (rackmud-db-version conn)
   (with-handlers ([exn:fail:sql? (lambda (e) #f)])
@@ -63,7 +64,8 @@
   
 (define object-load-stmt
   (virtual-statement
-   "SELECT cid, o.created, o.saved, od.fields FROM objects o INNER JOIN object_fields od ON (o.oid = $1) AND (od.oid = $1) AND (o.saved = od.saved)"))
+   "SELECT cid, o.created, o.saved, od.fields FROM objects o INNER JOIN object_fields od \
+   ON (o.oid = $1) AND (od.oid = $1) AND (o.saved = od.saved)"))
 
 
 (define class-load-stmt
@@ -388,12 +390,14 @@ database-get-cid! : Symbol Path -> Nat
       [(simple number string boolean char bytes moment object)
        (query-exec
         _dbc_
-        (format "CREATE INDEX IF NOT EXISTS object_field_~a ON object_fields USING BTREE ((fields#>array[~a])) WHERE ((fields#>array[~a])) IS NOT NULL"
+        (format "CREATE INDEX IF NOT EXISTS object_field_~a ON object_fields USING BTREE ((fields#>array[~a])) WHERE\
+                 ((fields#>array[~a])) IS NOT NULL"
                 index-name search-path search-path))]
       [(list vector symbol-table set hash json)
        (query-exec
         _dbc_
-        (format "CREATE INDEX IF NOT EXISTS object_field_~a ON object_fields USING GIN ((fields#>array[~a])) WHERE ((fields#>array[~a])) IS NOT NULL"
+        (format "CREATE INDEX IF NOT EXISTS object_field_~a ON object_fields USING GIN ((fields#>array[~a])) WHERE\
+                 ((fields#>array[~a])) IS NOT NULL"
                 index-name search-path search-path))]
       [else (raise-argument-error 'database-create-field-index "(or/c 'simple 'json)" type)])))
 

@@ -37,29 +37,33 @@
        (lambda ()
          (let loop ()
            (define msg
-             (ws-recv websock-connection))
-           (unless (eof-object? msg)
-             (define msg/json (string->jsexpr msg))
-             (define msg-type (hash-ref msg/json 'type ""))
-             (case (string->symbol msg-type)
-               [(text) (receive (hash-ref msg/json 'payload))]
-               [(gmcp) (receive (list 'gmcp (hash-ref msg/json 'package) (hash-ref msg/json 'payload #f)))]
-               [(naws)
-                (let ([width (hash-ref msg/json 'width)]
-                      [height (hash-ref msg/json 'height)])
-                  (set-dimensions! width height)
-                  (receive (list 'naws width height)))]
-               [else (void)])
-             (loop))))))
+             (with-handlers ([exn? (λ (e) (eprintf "~v\n" e) eof)])
+               (ws-recv websock-connection #:payload-type 'text)))
+           (if (eof-object? msg)
+               (begin
+                 (receive msg)
+                 (ws-close! websock-connection))
+               (let* ([msg/json (string->jsexpr (if (bytes? msg) (bytes->string/utf-8 msg) msg))]
+                      [msg-type (hash-ref msg/json 'type "")])
+                 (case (string->symbol msg-type)
+                   [(text) (receive (hash-ref msg/json 'payload))]
+                   [(gmcp) (receive (list 'gmcp (hash-ref msg/json 'package) (hash-ref msg/json 'payload #f)))]
+                   [(naws)
+                    (let ([width (hash-ref msg/json 'width)]
+                          [height (hash-ref msg/json 'height)])
+                      (set-dimensions! width height)
+                      (receive (list 'naws width height)))]
+                   [else (void)])
+                 (loop)))))))
                                       
     
     (define/override (transmit . args)
       (for ([msg (in-list args)])
         (match msg
           [(or #f (? eof-object?))
-           (kill-thread connection-thread)
            (ws-close! websock-connection #:reason "Connection closed by server")
-           (receive eof)]
+           (receive eof)
+           (kill-thread connection-thread)]
           [(? string?) (ws-send! websock-connection (jsexpr->string `#hasheq((type . "text") (text . ,msg))))]
           [(? bytes?) (ws-send! websock-connection (jsexpr->string `#hasheq((type . "text") (text . ,(bytes->string/utf-8 msg)))))]
           ['nop

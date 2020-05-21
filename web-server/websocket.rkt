@@ -71,7 +71,12 @@
  [renew-websocket-server-certificate (websocket-server? path-string? path-string? . -> . void?)]
  [serve/servlet+websockets
   (((request? . -> . can-be-response?)
-    (url? . -> . ((or/c symbol? #f) . -> . (or/c #f (-> ws-conn? void)))))
+    ;(url? . -> . ((or/c symbol? #f) . -> . (or/c #f (-> ws-conn? void)))))
+    (-> ws-conn? request? void)
+    (or/c (-> bytes? (listof header?) request?
+          (values (listof header?) any/c))
+      (-> bytes? (listof header?)
+          (values (listof header?) any/c))))
     
    (#:connection-close? boolean?
     #:listen-ip (or/c false/c string?)
@@ -140,7 +145,9 @@
 
 (define (serve/servlet+websockets
          servlet-manager
-         websocket-service-mapper
+         ;websocket-service-mapper
+         ws-conn-req
+         ws-conn-headers
          #:connection-close?
          [connection-close? #f]
          #:command-line?
@@ -228,10 +235,8 @@
     (ssl-load-certificate-chain! ssl-ctxt ssl-cert)
     (ssl-load-private-key! ssl-ctxt ssl-key))
 
-  
-  
   (define websocket-dispatch
-    (let ([dispatch (make-service-mapper-dispatcher websocket-service-mapper)])
+    (let ([dispatch (make-general-websockets-dispatcher ws-conn-req ws-conn-headers)])
       (λ (connection request)
         (with-handlers [(exn:dispatcher?
                          (λ (e)
@@ -240,6 +245,7 @@
                             (response 400 #"Bad WebSocket request" (current-seconds) #f '() void)
                             (request-method request))))]
           (dispatch connection request)))))
+
   (define dispatcher
     (dispatcher-sequence
      (and log-file (log:make #:format 
@@ -261,16 +267,6 @@
       #:responders-servlet 
       responders-servlet)
 
-#|     (let-values ([(clear-cache! url->servlet)
-                   (servlets:make-cached-url->servlet
-                    (fsmap:filter-url->path
-                     #rx"\\.(ss|scm|rkt|rktd)$"
-                     (fsmap:make-url->valid-path
-                      (fsmap:make-url->path servlets-root)))
-                    (make-default-path->servlet
-                     #:make-servlet-namespace 
-                     (make-make-servlet-namespace #:to-be-copied-module-specs servlet-namespace)))])
-       (servlets:make url->servlet))|#
      (map (lambda (extra-files-path)
             (files:make
              #:url->path (fsmap:make-url->path extra-files-path)

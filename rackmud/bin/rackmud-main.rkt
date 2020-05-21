@@ -1,12 +1,16 @@
 #lang racket/base
 
 (define t0 (current-inexact-milliseconds))
-(require net/rfc6455 racket/tcp openssl telnet telnet/charset racket/place racket/runtime-path
+(require net/rfc6455 net/url web-server/http/request-structs
+         racket/tcp openssl telnet telnet/charset racket/place racket/runtime-path
          "../main.rkt" "../backtrace.rkt" "../db.rkt"  "../websock.rkt"  "../connections.rkt" "config.rkt" "new-setup.rkt"
          )
 (define-namespace-anchor anc)
 
-
+(define (list=? a b)
+  (or (and (null? a) (null? b))
+      (and (cons? a) (cons? b) (eq? (car a) (car b))
+           (list=? (cdr a) (cdr b)))))
 
 (define cfg (load-rackmud-settings))
 (define-runtime-path COMPILER-PLACE "./compiler-place.rkt")
@@ -115,8 +119,6 @@
     (exit 1))
 
   ;; With that taken care of, load the master object
-  (display "Loading Master Object...")
-  (set! t0 (current-inexact-milliseconds))
   
   (define resolved-collect (collection-file-path mudlib-module (symbol->string mudlib-collect) #:fail
                                                  (lambda (message)
@@ -129,6 +131,9 @@
   
   (start-scheduler! (hash-ref cfg 'thread-count))  
   ;(displayln (current-library-collection-paths))
+  (display "Loading Master Object...")
+  (set! t0 (current-inexact-milliseconds))
+  
   (load-master-object! resolved-collect
                        (string->symbol (hash-ref cfg 'master-classname "custom-master%")))
   
@@ -139,12 +144,17 @@
   ;  ((send master-object get-connection-mixin)
   ;   server-websock-conn%))
 
+#|
   (define (add-websock-user ws-conn)
     (define handshake (ws-recv ws-conn))
     (unless (eof-object? handshake)
       (define handshake/json (string->jsexpr handshake))
-      (define conn (new custom-websock% [websock-connection ws-conn] [secure? (hash-ref handshake/json 'ssl)] [ip (hash-ref handshake/json 'ip)]))
+      (define conn (new custom-websock%
+                        [websock-connection ws-conn]
+                        [secure? (hash-ref handshake/json 'ssl)]
+                        [ip (hash-ref handshake/json 'ip)]))
       (send master-object on-connect conn)))
+  |#
   
   (define (add-telnet-user in out ip [secure? #f])
     (define conn (new custom-telnet% [in in] [out out] [ip ip] [secure? secure?]
@@ -218,6 +228,33 @@
   ;; and also start the webserver (if enabled)
 
   ;(define (start-webserver mode port ssl-port static-root servlet-url websock-url certificate private-key)
+
+  (define websock-url-prefix-length (length (explode-path (string->path (hash-ref cfg 'webserver:websock-url "socket")))))
+
+  (define websock-client-url/path-list (map (compose string->symbol path->string) (explode-path (string->path
+                                                                                                 (hash-ref cfg 'webserver:websock-client-url)))))
+  
+  (define (ws-conn-req ws-conn req)
+    (let ([path-elements (map (compose string->symbol path/param-path)
+                                     (drop (url-path (request-uri req))
+                                           websock-url-prefix-length))])
+      (if (list=? path-elements websock-client-url/path-list)
+          (send master-object
+                on-connect
+                (new
+                 custom-websock%
+                 [websock-connection ws-conn]
+                 [secure? (eqv? (request-host-port req) https-port)]
+                 [ip (request-client-ip req)]
+                 ))
+          (if (is-a? master-object websocket-server<%>)
+              (send master-object websock-request path-elements req)
+              (ws-close! ws-conn 1008 "BAD WEBSOCKET URL")
+              ))))
+
+  (define (ws-req-headers request-line headers req)
+    (values '() req))
+          
   
   (when (or http-enabled? https-enabled?)
     (start-webserver
@@ -230,10 +267,13 @@
      (hash-ref cfg 'webserver:servlet-url "servlet")
      (send master-object get-servlet-handler (hash-ref cfg 'webserver:servlet-url "servlet"))
      (hash-ref cfg 'webserver:websock-url "socket")
-     (send master-object get-websocket-mapper
-           (hash-ref cfg 'webserver:websock-url "socket")
-           (hash-ref cfg 'webserver:websock-client-url #f)
-           add-websock-user)
+     ;(send master-object get-websocket-mapper
+     ;      (hash-ref cfg 'webserver:websock-url "socket")
+     ;      (hash-ref cfg 'webserver:websock-client-url #f)
+     ;      add-websock-user)
+     ws-conn-req
+     ws-req-headers
+     
      (hash-ref cfg 'ssl:certificate #f)
      (hash-ref cfg 'ssl:private-key #f)))
 

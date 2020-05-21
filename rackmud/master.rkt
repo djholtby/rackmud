@@ -2,7 +2,7 @@
 
 (require racket/class racket/list racket/contract (for-syntax racket/base) racket/async-channel)
 
-(require web-server/websocket)
+(require web-server/websocket web-server/http/request-structs)
 
 
 (require json)
@@ -10,7 +10,7 @@
 (require telnet/connection)
 (require "scheduler.rkt")
 (require racket/rerequire)
-(provide master-object master<%> start-scheduler! shut-down! load-master-object!)
+(provide master-object master<%> websocket-server<%> start-scheduler! shut-down! load-master-object!)
 ;(provide add-user-to-rackmud)
 
 (provide yield! queue-event send/yield!)
@@ -24,6 +24,9 @@ Master Interface
 The connection manager will send a telnet-object to it whenever a user connects.
 |||||||||||||||||||||#
 
+(define websocket-server<%>
+  (interface ()
+    [websock-request (->m (listof symbol?) request? void?)]))
 
 (define master<%>
   (interface ()
@@ -32,7 +35,6 @@ The connection manager will send a telnet-object to it whenever a user connects.
     [on-shutdown (->m void?)]
     [get-connection-mixin (->m (-> (implementation?/c terminal<%>) (implementation?/c terminal<%>)))]
     get-servlet-handler
-    get-websocket-mapper
     ))
 
 (define scheduler (make-event-scheduler))
@@ -68,7 +70,8 @@ The connection manager will send a telnet-object to it whenever a user connects.
 (define (webserver-stop)
   (stop-websocket-server webserver))
                       
-(define (start-webserver mode port ssl-port static-root servlet-url servlet-handler websock-url websock-mapper certificate private-key)
+(define (start-webserver mode port ssl-port static-root servlet-url servlet-handler websock-url ws-conn-req ws-conn-headers
+                         certificate private-key)
   (when (and (not (eq? mode 'https))
              (not port))
     (raise-argument-error 'start-webserver "listen-port-number?" port))
@@ -81,8 +84,7 @@ The connection manager will send a telnet-object to it whenever a user connects.
          [confirmation-channel (make-async-channel)]
          [the-server (serve/servlet+websockets
                       servlet-handler
-                      websock-mapper
-
+                      ws-conn-req ws-conn-headers
                       #:confirmation-channel confirmation-channel
                       #:http-port port
                       #:ssl-port ssl-port
