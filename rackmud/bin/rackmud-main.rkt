@@ -57,14 +57,14 @@
                [current-logger rackmud-logger])
 
   (define logger-thread
-        (thread
-         (λ ()
-           (let loop ()
-             (match (sync rackmud-log-rec)
-               [(vector level msg data topic)
-                (when (and (string? msg) (database-connected?))
-                  (database-log level (or topic "racket") msg (backtrace data)))])
-             (loop)))))
+    (thread
+     (λ ()
+       (let loop ()
+         (match (sync rackmud-log-rec)
+           [(vector level msg data topic)
+            (when (and (string? msg) (database-connected?))
+              (database-log level (or topic "racket") msg (backtrace data)))])
+         (loop)))))
   
   (define telnet-port (hash-ref cfg 'telnet:port #f))
   (define telnet-ssl-port (hash-ref cfg 'telnet:ssl-port #f))
@@ -144,7 +144,7 @@
   ;  ((send master-object get-connection-mixin)
   ;   server-websock-conn%))
 
-#|
+  #|
   (define (add-websock-user ws-conn)
     (define handshake (ws-recv ws-conn))
     (unless (eof-object? handshake)
@@ -236,8 +236,8 @@
   
   (define (ws-conn-req ws-conn req)
     (let ([path-elements (map (compose string->symbol path/param-path)
-                                     (drop (url-path (request-uri req))
-                                           websock-url-prefix-length))])
+                              (drop (url-path (request-uri req))
+                                    websock-url-prefix-length))])
       (if (list=? path-elements websock-client-url/path-list)
           (send master-object
                 on-connect
@@ -257,25 +257,29 @@
           
   
   (when (or http-enabled? https-enabled?)
-    (start-webserver
-     (cond [(not http-enabled?) 'https]
-           [(not https-enabled?) 'http]
-           [else 'http+https])
-     http-port
-     https-port
-     (hash-ref cfg 'webserver:web-path "./www")
-     (hash-ref cfg 'webserver:servlet-url "servlet")
-     (send master-object get-servlet-handler (hash-ref cfg 'webserver:servlet-url "servlet"))
-     (hash-ref cfg 'webserver:websock-url "socket")
-     ;(send master-object get-websocket-mapper
-     ;      (hash-ref cfg 'webserver:websock-url "socket")
-     ;      (hash-ref cfg 'webserver:websock-client-url #f)
-     ;      add-websock-user)
-     ws-conn-req
-     ws-req-headers
+    (parameterize ([error-display-handler
+                    (let ([edh (error-display-handler)])
+                      (λ (msg exn) (unless (exn:fail:network? exn)
+                                     ((edh) msg exn))))])
+      (start-webserver
+       (cond [(not http-enabled?) 'https]
+             [(not https-enabled?) 'http]
+             [else 'http+https])
+       http-port
+       https-port
+       (hash-ref cfg 'webserver:web-path "./www")
+       (hash-ref cfg 'webserver:servlet-url "servlet")
+       (send master-object get-servlet-handler (hash-ref cfg 'webserver:servlet-url "servlet"))
+       (hash-ref cfg 'webserver:websock-url "socket")
+       ;(send master-object get-websocket-mapper
+       ;      (hash-ref cfg 'webserver:websock-url "socket")
+       ;      (hash-ref cfg 'webserver:websock-client-url #f)
+       ;      add-websock-user)
+       ws-conn-req
+       ws-req-headers
      
-     (hash-ref cfg 'ssl:certificate #f)
-     (hash-ref cfg 'ssl:private-key #f)))
+       (hash-ref cfg 'ssl:certificate #f)
+       (hash-ref cfg 'ssl:private-key #f))))
 
   (define cert-thread
     (and (or https-enabled? ssl-ctxt)
