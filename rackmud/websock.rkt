@@ -5,6 +5,8 @@
 
 (provide websock-terminal%)
 
+
+
 (define websock-terminal%
   (class* terminal% (terminal<%>)
     (super-new)
@@ -31,7 +33,7 @@
 
     (define/override (supports? option)
       (memq option '(color xterm-256 true-color gmcp)))
-    
+
     (define connection-thread
       (thread
        (lambda ()

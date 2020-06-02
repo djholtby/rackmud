@@ -25,7 +25,12 @@
     ;(hash-union! markup-settings (send master-object get-server-markup-settings))
     
     (init-field [inner-connection #f])
+    (init [preauthorized #f])
 
+    (define preauth preauthorized)
+    (define/public (get-preauthorized-object)
+      preauth)
+    
     (define/override (receive message)
       (define pass-on?
       (match message

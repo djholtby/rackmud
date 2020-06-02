@@ -1,11 +1,11 @@
 #lang racket/base
 
-(require db racket/format gregor racket/match racket/list racket/set "lib-path.rkt" racket/rerequire uuid racket/string)
+(require db racket/format gregor racket/match racket/list racket/set "lib-path.rkt" racket/rerequire uuid racket/string sha)
 
 (provide make-rackmud-db-connection make-rackmud-db-pool rackmud-db-version database-log
          database-save-object database-new-object database-get-object database-get-singleton database-make-singleton
          database-connected? database-disconnect database-get-cid! load-class file->cids set-database-connection!
-         database-make-token database-verify-token database-get-all-tokens database-expire-token database-expire-all-tokens
+         database-make-token database-token-refresh database-get-all-tokens database-expire-token database-expire-all-tokens
          database-create-field-index database-get-field-index-ids
 
          field-search-array field-search-array/and field-search-array/or
@@ -120,11 +120,12 @@
 
 (define new-token-stmt
   (virtual-statement
-   "INSERT INTO auth (token, oid, expires) values ($1, $2, $3) RETURNING seq"))
+   "INSERT INTO auth_testing.auth (oid, expires, sig) values ($1, (now() + $2 * interval '1 second'), $3) RETURNING seq"))
 
-(define verify-auth-stmt
+(define get-id-for-token-stmt
   (virtual-statement
-   "SELECT oid, token, expires FROM auth WHERE seq = $1"))
+   (string-append "SELECT oid,((expires IS NOT NULL) and (expires <= now())) AS expired , EXTRACT(epoch FROM (expires - issued))::int AS duration "
+                  "FROM auth_testing.auth WHERE seq = $1 AND sig = $2" )))
 
 (define tokens-for-oid-stmt
   (virtual-statement
@@ -439,23 +440,48 @@ database-get-cid! : Symbol Path -> Nat
     (values (vector-ref response 0)
             (sql->moment (vector-ref response 1)))))
 
-(define (database-make-token oid #:expires [expires (moment 99999)])
-  (define seq (uuid-string))
-  (define token (uuid-string))
-  (query-exec _dbc_ new-token-stmt seq (sha256-bytes (string->bytes/utf-8 token)) oid (moment->sql expires))
-  (string-append seq ":" token))
+;; (database-make-token oid [duration]) generates a new token for object id OID
+;;  that expires after duration seconds (or never expires if duration is #f)
+;;  and returns that token
+;; database-make-token: OID (or #f Nat) -> Token
 
-(define (database-verify-token text)
-  (match-define
-    (list seq token)
-    (string-split text ":"))
-  (define result (query-maybe-row _dbc_ verify-auth-stmt seq))
-  (and result
-       (moment<? (now/moment/utc)
-                 (sql->moment (vector-ref result 2)))
-       (bytes=? (vector-ref result 1)
-                (sha256-bytes (string->bytes/utf-8 token)))
-       (vector-ref result 0)))
+(define (database-make-token oid [duration #f])
+  (let* ([sig (uuid-string)]
+         [sig/hash (sha384 (string->bytes/utf-8 sig))]
+         [seq (query-value _dbc_ new-token-stmt oid (false->sql-null duration) sig/hash)])
+    (string-append seq "&" sig)))
+  
+;; parse-sig-token: Str -> (or #f UUID) (or #f UUID)
+
+(define (parse-sig-token maybe-token)
+  (if maybe-token
+      (let [(strings (string-split maybe-token "&"))]
+        (if (and (cons? strings) (cons? (cdr strings)) (null? (cddr strings)) ; 2 element list
+                 (uuid-string? (car strings)) (uuid-string? (cadr strings)))  ; both elements are UUID strings
+            (values (car strings) (cadr strings))
+            (and (log-warning "received invalid refresh token value: ~a" maybe-token) (values #f #f))))
+      (values #f #f)))       ; cookie was not found
+
+
+;; database-token-refresh: Str -> (or #f OID) (or #f duration) (or #f Token)
+
+(define (database-token-refresh old-token)
+  (call-with-transaction
+   _dbc_
+   (λ ()
+     (let-values ([(seq sig) (parse-sig-token old-token)])
+       (let* ([token-info (and seq (query-maybe-row _dbc_ get-id-for-token-stmt seq (sha384 (string->bytes/utf-8 sig))))]
+           [id (and token-info (vector-ref token-info 0))]
+           [expired? (and token-info (vector-ref token-info 1))])
+      (when token-info (query-exec _dbc_ expire-token-stmt seq))
+      (if (and id (not expired?))
+          (values id
+                  (sql-null->false (vector-ref token-info 2))
+                  (database-make-token id (sql-null->false (vector-ref token-info 2))))
+          (values id #f #f)))))))
+
+
+
 
 (define (database-get-all-tokens oid)
   (query-list _dbc_ tokens-for-oid-stmt oid))

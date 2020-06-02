@@ -15,6 +15,7 @@
          racket/file
          racket/logging
          racket/hash
+         racket/format
          versioned-box
          json
          telnet/connection
@@ -27,6 +28,7 @@
          "logger.rkt"
          "lib-path.rkt"
          "connections.rkt"
+         "parameters.rkt"
          )
 
 (provide
@@ -69,6 +71,7 @@
                racket/file
                racket/logging
                racket/hash
+               racket/format
                json
                versioned-box
                telnet/connection
@@ -142,7 +145,25 @@
   [class-field-accessor/rackmud class-field-accessor]
   [class-field-mutator/rackmud class-field-mutator]
   [this/rackmud this]
-
+  [rackmud:domain:RO rackmud:domain]
+  [rackmud:telnet-port:RO rackmud:telnet-port]
+  [rackmud:ssl-telnet-port:RO rackmud:ssl-telnet-port]
+  [rackmud:http-port:RO rackmud:http-port]
+  [rackmud:https-port:RO rackmud:https-port]
+  [rackmud:servlet-path:RO rackmud:servlet-path]
+  [rackmud:websock-path:RO rackmud:websock-path]
+  [rackmud:websock-client-path:RO rackmud:websock-client-path]
   ))
+
+
+
+(define (rackmud:domain:RO) (rackmud:domain))
+(define (rackmud:telnet-port:RO) (rackmud:telnet-port))
+(define (rackmud:ssl-telnet-port:RO) (rackmud:ssl-telnet-port))
+(define (rackmud:http-port:RO) (rackmud:http-port))
+(define (rackmud:https-port:RO) (rackmud:https-port))
+(define (rackmud:servlet-path:RO) (rackmud:servlet-path))
+(define (rackmud:websock-path:RO) (rackmud:websock-path))
+(define (rackmud:websock-client-path:RO) (rackmud:websock-client-path))
 
 (module reader syntax/module-reader rackmud/main)

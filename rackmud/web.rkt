@@ -13,7 +13,8 @@
           racket/stxparam
           racket/class
           gregor
-          "objects.rkt"
+          json
+          "objects.rkt" "auth.rkt"
           )
 
 (provide (all-from-out web-server/http
@@ -26,60 +27,60 @@
                        net/url
                        net/rfc6455
                        ))
+(provide logout-cookies request->authorized-object object->auth-cookies define-authorized-responder
+         response/text response/json)
 
-
-(provide make-login-cookie validate-login-cookie auth-account protected-page authed-page logout-headers)
-
-(define login-cookie-name "rackmud-login-auth")
-(define redirect-cookie-name "rackmud-login-redirect")
+(define jwt-cookie-name "rackmud-auth")
+(define refresh-cookie-name "rackmud-token")
+(define TEXT/PLAIN-MIME-TYPE #"text/plain; charset=utf-8")
+(define JSON-MIME-TYPE #"application/json")
 (define private-key (make-secret-salt/file "COOKIE"))
 
-(define (make-login-cookie acct [expires (moment 99999)] [secure? #f])
-  (make-id-cookie login-cookie-name
-                  (make-auth-token acct expires)
-                  #:key private-key
-                  #:secure? secure?
-                  #:http-only? #t))
+(define (response/text body #:code [code 200] #:message [message #f] #:headers [headers '()] #:cookies [cookies '()])
+  (response/full code message (current-seconds) TEXT/PLAIN-MIME-TYPE (append headers (map cookie->header cookies)) (list body)))
 
-(define (validate-login-cookie request)
-  (define cookie-value (request-id-cookie request
-                                          #:name login-cookie-name
-                                          #:key private-key))
-  (and cookie-value (verify-auth-token cookie-value)))
-                    
-                    
-(define-syntax-parameter auth-account
-  (lambda (stx)
-    (raise-syntax-error #f "use outside the context of an authorized or protected page body" stx)))
+(define (response/json jsexpr #:code [code 200] #:message [message #f] #:headers [headers '()] #:cookies [cookies '()])
+  (response/full code message (current-seconds) JSON-MIME-TYPE (append headers (map cookie->header cookies))
+                 (jsexpr->string jsexpr)))
 
-;(protected-page request auth-settings id body ...) binds the authentication value (specified by auth-settings) from request to id 
-;   and evaluates expressions (body  ...) using this binding.  If no user is authenticated, will instead redirect to the login page
+(define logout-cookies
+   (list (make-cookie jwt-cookie-name "" #:expires (date* 0 0 0 1 1 1970 4 0 #f 0 0 "UTC"))
+         (logout-id-cookie refresh-cookie-name)))
 
-(define-syntax (protected-page stx)
+(define (jwt->cookie jwt)
+  (make-cookie jwt-cookie-name jwt #:http-only? #t #:max-age (jwt-duration)))
+
+(define (token->cookie token duration)
+  (make-id-cookie refresh-cookie-name token #:key private-key #:max-age duration))
+
+;; get-auth-cookies: Request -> (or Str #f) (or Str #f)
+
+(define (get-auth-cookies req)
+  (values
+   (findf (λ (cookie) (string=? jwt-cookie-name (client-cookie-name cookie))) (request-cookies request))
+   (request-id-cookie req #:name refresh-cookie-name #:key private-key)))
+
+;; get-authentication: Request -> (or #f Object) (listof Cookie)
+
+(define (request->authorized-object req)
+  (let-values ([(jwt token) (get-auth-cookies req)])
+    (let-values ([(object duration new-jwt new-token) (get-authorization jwt token)])
+      (values object
+              (if new-jwt
+                  (list (jwt->cookie new-jwt)
+                        (token->cookie new-token duration))
+                  (if object '() logout-cookies))))))
+
+(define-syntax (define-authorized-responder stx)
   (syntax-case stx ()
-    [(_ [request] body ...)
-     #'(let ([auth-account (validate-login-cookie request)])
-         (if auth-id
-             (begin body ...)
-             (redirect-to login-url
-                          see-other
-                          #:headers (list (cookie->header (make-cookie redirect-cookie-name auth-settings
-                                                                       (url->string (request-uri request))))))))]))
-
-;(authed-page request auth-settings id body ...) binds the authentication value (specified by auth-settings) from request to id 
-;   and evaluates expressions (body  ...) using this binding.  If no user is authenticated, id will be bound to #f
-
-(define-syntax (authed-page stx)
-  (syntax-case stx ()
-    [(_ [request]  body ...)
-     #'(let ([auth-account (validate-login-cookie request)])
-         body ...)]))
+    [(_ (responder-name request object) body ...)
+     #'(define (responder-name request)
+         (let-values ([(object auth-cookies) (request->authorized-object request)])
+           (let ([resp (begin body ...)])
+             (struct-copy response resp [headers (append (map cookie->header auth-cookies) (response-headers resp))]))))]))
 
 
-;; (logout-headers auth-settings) generates unset cookie headers to expire the login-redirect and authentication cookies
-
-(define (logout-headers auth-settings)
-  (list
-   (cookie->header (logout-id-cookie login-cookie-name))
-   (cookie->header (make-cookie redirect-cookie-name "" #:expires (seconds->date 0)))))
-
+(define (object->auth-cookies object [refresh-duration #f])
+  (let-values ([(jwt token) (make-authorization object refresh-duration)])
+    (list (jwt->cookie jwt)
+          (token->cookie token))))

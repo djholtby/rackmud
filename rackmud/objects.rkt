@@ -6,7 +6,7 @@
 
 (require gregor versioned-box json net/base64)
 
-(require "db.rkt" "lib-path.rkt" "backtrace.rkt") 
+(require "db.rkt" "lib-path.rkt" "backtrace.rkt" "auth.rkt") 
 
 (provide saved-object% define-saved-class* define-saved-class 
          define-saved-mixin)
@@ -20,7 +20,7 @@
          object-method-arity-includes?/rackmud field-names/rackmud object-info/rackmud dynamic-send/rackmud
          send/keyword-apply/rackmud send/apply/rackmud dynamic-get-field/rackmud dynamic-set-field!/rackmud field-bound?/rackmud
          class-field-accessor/rackmud class-field-mutator/rackmud this/rackmud
-         make-auth-token verify-auth-token get-all-auth-tokens expire-auth-token expire-all-auth-tokens)
+         get-authorization make-authorization get-all-auth-tokens expire-auth-token expire-all-auth-tokens)
 
 
 (define class-dep-sema (make-semaphore 1))
@@ -1175,24 +1175,22 @@
                 ))))))))
 
 
-
-
 #|||||||||||||||||||||||||||||||||||||||||||||||
                  WEBAUTH STUFF
 ||||||||||||||||||||||||||||||||||||||||||||||||#
 
-(define (make-auth-token obj [expires #f])
-  (let [(oid (lazy-ref-id obj))]
-    (if expires
-        (database-make-token oid #:expires (moment->iso8601 expires))
-        (database-make-token oid))))
+(define (make-authorization obj [duration #f])
+  (values (make-auth-jwt (send obj get-id))
+          (database-make-token (send obj get-id) duration)))
 
-
-(define (verify-auth-token text)
-  (let ([maybe-oid (database-verify-token text)])
-    (and maybe-oid (lazy-ref maybe-oid #f))))
-
-
+(define (get-authorization jwt token)
+  (let ([jwt-id (verify-auth-jwt jwt)])
+    (if jwt
+        (values (lazy-ref jwt-id #f) #f #f #f)
+        (let-values ([(oid duration new-jwt new-token)
+                      (refresh-jwt token)])
+          (values (and oid (lazy-ref oid #f)) duration new-jwt new-token)))))
+        
 (define (get-all-auth-tokens obj)
   (database-get-all-tokens (lazy-ref-id obj)))
 
@@ -1203,6 +1201,7 @@
 
 (define (expire-all-auth-tokens obj)
   (database-expire-all-tokens (lazy-ref obj)))
+
 
 #|||||||||||||||||||||||||||||||||||||||||||||||
                  DATABASE STUFF

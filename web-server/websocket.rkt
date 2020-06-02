@@ -248,13 +248,13 @@
 
   (define dispatcher
     (dispatcher-sequence
+     (filter:make websocket-regexp websocket-dispatch)
+
      (and log-file (log:make #:format 
                              (if (symbol? log-format)
                                  (log:log-format->format log-format)
                                  log-format)
                              #:log-path log-file))
-     (filter:make websocket-regexp websocket-dispatch)
-
      (dispatch/servlet 
       servlet-manager
       #:regexp servlet-regexp
