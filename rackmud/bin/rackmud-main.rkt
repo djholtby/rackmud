@@ -2,8 +2,8 @@
 
 (define t0 (current-inexact-milliseconds))
 (require net/rfc6455 net/url web-server/http/request-structs
-         racket/tcp openssl telnet telnet/charset racket/place racket/runtime-path
-         net/base64 racket/random
+         racket/tcp openssl telnet charset racket/place racket/runtime-path
+         net/base64 racket/random readline/rep-start
          (except-in "../main.rkt" rackmud:domain rackmud:telnet-port rackmud:ssl-telnet-port
                     rackmud:http-port rackmud:https-port rackmud:servlet-path rackmud:websock-path rackmud:websock-client-path)
          "../web.rkt" "../backtrace.rkt" "../db.rkt"  "../websock.rkt"
@@ -133,7 +133,7 @@
     (define telnet-encodings
       (and (or telnet-enabled? telnet-ssl-enabled?)
            ;; convert the encodings list from the config file into the names that (mostly) always work with iconv
-           (let ([encodings (map encoding->symbol (hash-ref cfg 'telnet:encodings '("ASCII")))])
+           (let ([encodings (map string->charset-name (hash-ref cfg 'telnet:encodings '("ASCII")))])
              ;; If they didn't include ASCII, they should have done as a last resort, since telnet MUST default to ASCII
              (if (memq 'ASCII encodings) encodings (append encodings '(ASCII))))))
     (define telnet-charset-seq
@@ -290,7 +290,7 @@
       (parameterize ([error-display-handler
                       (let ([edh (error-display-handler)])
                         (λ (msg exn) (unless (exn:fail:network? exn)
-                                       ((edh) msg exn))))])
+                                       (edh msg exn))))])
         (start-webserver
          (cond [(not http-enabled?) 'https]
                [(not https-enabled?) 'http]
@@ -339,8 +339,7 @@
          (let loop ()
            (define changes (place-channel-get compiler-place))
            (when (cons? changes)
-             (rackmud-mark-reloads changes)
-             (void))
+             (rackmud-mark-reloads changes))
            (loop)))))
   
     (define repl-thread
