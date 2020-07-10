@@ -6,27 +6,33 @@
 (provide outer-connection<%> inner-connection<%> conn-mixin)
 
 (define outer-connection<%>
-  (interface (terminal<%>)))
+  (interface (terminal<%>)
+    set-inner-connection
+    get-inner-connection))
 
 (define inner-connection<%>
   (interface (conn<%>)
-    [set-outer-connection (->*m ((is-a?/c/rackmud outer-connection<%>)) ; mandatory
+    set-outer-connection
+    get-outer-connection))#| (->*m ((is-a?/c/rackmud outer-connection<%>)) ; mandatory
                                 #:rest (listof any/c)           ; rest
-                                any/c)]))                       ; range
+                                any/c)]))                       ; range|#
 
 (define conn-mixin
   (mixin (terminal<%>) (outer-connection<%>)
     (super-new)
-    (inherit supports?)
+    (inherit supports? transmit)
     (inherit-field markup-settings)
     ;(will-register object-executor this (λ (o) (eprintf "CONN DESTROYED\n")))
 
     ; TODO: move this to on-connect
     ;(hash-union! markup-settings (send master-object get-server-markup-settings))
     
-    (init-field [inner-connection #f])
+    (init [inner-connection #f])
     (init [preauthorized #f])
 
+    (define ic inner-connection)
+    
+    
     (define preauth preauthorized)
     (define/public (get-preauthorized-object)
       preauth)
@@ -45,17 +51,26 @@
           )
          #t]
         [(or (? eof-object?) #f)
-         (set! inner-connection #f)
+         (set! ic #f)
          (unless (eq? master-object 'shutting-down)
            (send/rackmud master-object on-disconnect this))
          #t]
         [else #t]))
-      (when (and pass-on? inner-connection (send/rackmud inner-connection connected?))
+      (when (and pass-on? ic (send/rackmud ic connected?))
         (with-handlers ([exn? (λ (e) (log-message (current-logger) 'error (exn-message e) (backtrace e)))])
-          (send/rackmud inner-connection receive message))
+          (send/rackmud ic receive message))
         ))
 
-    (define/override (transmit . messages)
+    (define/public (set-inner-connection new-connection . args)
+      (unless (is-a?/rackmud new-connection inner-connection<%>)
+        (raise-argument-error 'inner-connection::set-inner-connection "(is-a?/c inner-connection<%>)" new-connection))
+      (set! ic new-connection)
+      (send/rackmud new-connection set-outer-connection this . args))
+
+    (define/public (get-inner-connection)
+      ic)
+    
+    #|(define/override (transmit . messages)
       (match messages
         #|[(list (list 'menu-switch menu% vars state))
          (define menu (new-telnet-menu menu% this vars))
@@ -64,9 +79,9 @@
         [(list (list 'player-switch p))
          (send p set-connection this)
          (set! inner-connection p)]|#
-        [(list (list-rest 'switch-inner-connection new-connection args))
-         (set! inner-connection new-connection)
-         (send/rackmud new-connection set-outer-connection this . args)]
-        [else (super transmit . messages)]))
+        ;[(list (list-rest 'switch-inner-connection new-connection args))
+        ; (set! inner-connection new-connection)
+        ; (send/rackmud new-connection set-outer-connection this . args)]
+        [else (super transmit . messages)]))|#
     ))
 

@@ -4,81 +4,85 @@
          "master.rkt"
          telnet/connection racket/match)
 
-(provide vars (rename-out [transmit/param transmit] [set-state!/param set-state!] ) msg make-menu menu% new-telnet-menu)
+;(provide vars (rename-out [transmit/param transmit] [set-state!/param set-state!] ) msg make-menu menu% new-telnet-menu)
+(provide menu% menu+connection% define-menu-fsm)
 
-
-(define-syntax-parameter set-state!/param (syntax-rules ()))
+#|(define-syntax-parameter set-state!/param (syntax-rules ()))
 (define-syntax-parameter transmit/param (syntax-rules ()))
 (define-syntax-parameter vars (syntax-rules ()))
 
 (define-syntax-parameter msg (syntax-rules ()))
+|#
+
+(define set-state!/key (generate-member-key))
+(define get-state/key (generate-member-key))
+(define delta/key (generate-member-key))
+
+(define-member-name set-state! set-state!/key)
+(define-member-name get-state get-state/key)
+(define-member-name delta delta/key)
 
 
-    
-    
 
 (define menu%
-  (class* temp-object% (inner-connection<%>)
+  (class* temp-object% (conn<%>)
     (super-new)
-    (init-field [state #f]
-                [outer-conn #f])
-    (init [vars (make-hasheq)])
-    (field [vars-field vars])
-          
-    (abstract enter delta)
+    (init [initial-state #f]
+          [enter-on-create? #f])
+   
+    (define state initial-state)
+    
+    (abstract enter delta transmit)
 
     (define/public (connected?) #t)
     
-    (define/public (transmit . messages)
-      (when outer-conn (send outer-conn transmit . messages))
-      (void))
-
     (define/public (receive message)
       (when (string? message)
         (define new-state (delta message))
         (when (symbol? new-state)
           (set-state! new-state))))
 
-    (define (set-outer-connection/private oc new-vars [new-state #f] [delay #f])
-      (set! outer-conn oc)
-      (set! vars-field new-vars)
-      (when new-state
-        (if delay
-            (queue-event delay (send this set-state! new-state))
-            (send this set-state! new-state))))
+    (define/public (get-state)
+      state)
     
-    (define/public (set-outer-connection oc . rest)
-      (apply set-outer-connection/private oc rest))
-      
     (define/public (set-state! new-state #:allow-epsilon? [allow-epsilon? #t] #:trigger? [trigger? #t])
       (set! state new-state)
       (when trigger?
         (define epsilon-state (enter))
         (when (and allow-epsilon? (symbol? epsilon-state))
-          (set-state! epsilon-state #:allow-epsilon? #t))))))
-#|
-(define (make-telnet-transmitter tn)
-  (define (transmit . messages)
-    (for ([message (in-list messages)])
-      (if (and (cons? message) (eq? (first message) 'menu-switch))
-          (let ([new-menu (second message)])
-            (set-field! transmit-func new-menu transmit)
-            (set-telnet-user-data! tn new-menu))
-          (telnet-send tn message))))
-  transmit)
-|#
+          (set-state! epsilon-state #:allow-epsilon? #t))))
 
-(define (new-telnet-menu menu-class% tn [vars (make-hasheq)])
-  (define new-vars (hash-copy vars))
-  (define new-menu
-    (new menu-class%
-         [outer-conn  tn]
-         [vars new-vars]))
-  new-menu)
+    (when enter-on-create? (enter))))
 
-  (define-syntax (make-menu stx)
-    (syntax-case stx ()
-      [(_ state-clause ...)
+
+
+(define menu+connection%
+  (class* menu% (inner-connection<%>)
+    (define outer-connection #f)
+    
+
+    (define/override (transmit . messages)
+      (void (when outer-connection
+              (send/rackmud outer-connection transmit . messages))))
+
+    (define/public (get-outer-connection)
+      outer-connection)
+    
+    (define/public (set-outer-connection oconn [new-state #f] [delay #f])
+      (set! outer-connection oconn)
+      (if new-state
+          (if delay
+              (queue-event delay (send this set-state! new-state))
+              (send this set-state! new-state))
+          (if delay
+              (queue-event delay (send this enter))
+              (send this enter))))
+    
+    (super-new)))
+
+(define-syntax (define-menu-fsm stx)
+  (syntax-case stx ()
+    [(_ (msg) state-clause ...)
        (let ([enter-body-code '()]
              [delta-body-code '()])
          (for ([ccstx (in-list (syntax->list #'(state-clause ...)))])
@@ -99,36 +103,13 @@
                           [(state) expr ...])))
                      delta-body-code)))))
          (with-syntax ([(enter-body ...) enter-body-code]
-                       [(delta-body ...) delta-body-code]
-                       [.../2 (quote-syntax ...)]) ; lol nested templates are funny
-           #`(class menu%
-               (super-new)
-               (inherit-field state vars-field)
-               (inherit transmit set-state!)
+                       [(delta-body ...) delta-body-code])
+           #'(begin
                (define/override (enter)
-                 (define vars/param vars-field)
-                 (syntax-parameterize
-                     ([vars (syntax-id-rules () [_ vars/param])]
-                      [transmit/param (syntax-rules ()
-                                        [(transmit/param a .../2)
-                                         (transmit a .../2)])]
-                      [set-state!/param (syntax-rules ()
-                                          [(set-state!/param new-state kw .../2)
-                                           (set-state! new-state kw .../2)])])
-                   (case state
-                     enter-body ...
-                     [else #f])))
-               (define/override (delta msg/param)
-                 (define vars/param vars-field)
-                 (syntax-parameterize
-                     ([vars (syntax-id-rules () [_ vars/param])]
-                      [transmit/param (syntax-rules ()
-                                        [(transmit/param a .../2)
-                                         (transmit a .../2)])]
-                      [set-state!/param (syntax-rules ()
-                                          [(set-state!/param new-state kw .../2)
-                                           (set-state! new-state kw .../2)])]
-                      [msg (syntax-id-rules () [_ msg/param])])
-                   (case state
-                     delta-body ...
-                     [else #f]))))))]))
+                 (case (send this get-state)
+                   enter-body ...
+                   [else #f]))
+               (define/override (delta msg)
+                (case (send this get-state)
+                   delta-body ...
+                   [else #f])))))]))
