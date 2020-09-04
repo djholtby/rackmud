@@ -1267,16 +1267,16 @@
 (define (save-object oref)
   (unless (or (object? oref) (lazy-ref? oref))
     (raise-argument-error 'save-object "(or/c object? lazy-ref?)" oref))
-  (define o (if (lazy-ref? oref) (lazy-deref/no-keepalive oref) oref))
-  (if o
-      (let ([oid (send o get-id)]
-            [fields
-             (with-transaction #:mode read
-               (value->jsexpr (send o save)))])
-        (and (exact-nonnegative-integer? oid)
-             (set-field! saved o (database-save-object oid fields)) #t))
-         
-      #f))
+  (when (database-connected?)
+    (define o (if (lazy-ref? oref) (lazy-deref/no-keepalive oref) oref))
+    (if o
+        (let ([oid (send o get-id)]
+              [fields
+               (with-transaction #:mode read
+                 (value->jsexpr (send o save)))])
+          (and (exact-nonnegative-integer? oid)
+               (set-field! saved o (database-save-object oid fields)) #t))
+        #f)))
 
 (define-syntax (get-singleton stx)
   (syntax-case stx()
