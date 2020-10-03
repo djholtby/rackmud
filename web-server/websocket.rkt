@@ -137,11 +137,13 @@
   ssl:dispatch-server-connect@)
 
 (define (dispatcher-sequence . dispatchers)
-  (let loop ([ds dispatchers] [r '()])
-    (cond [(null? ds) (apply sequencer:make (reverse r))]
-          [(not (car ds))   (loop (cdr ds) r)]
-          [(list? (car ds)) (loop (append (car ds) (cdr ds)) r)]
-          [else (loop (cdr ds) (cons (car ds) r))])))
+  (apply sequencer:make
+         (reverse
+          (let loop ([ds dispatchers] [r '()])
+            (cond [(null? ds) r]
+                  [(not (car ds))   (loop (cdr ds) r)]
+                  [(list? (car ds)) (loop (cdr ds) (loop (car ds) r))]
+                  [else (loop (cdr ds) (cons (car ds) r))])))))
 
 (define (serve/servlet+websockets
          servlet-manager
