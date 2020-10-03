@@ -1,18 +1,14 @@
 #lang racket/base
 
 (require racket/class racket/list racket/contract (for-syntax racket/base) racket/async-channel)
-
-(require web-server/websocket web-server/http/request-structs)
-
-
+(require "websocket-server.rkt"  web-server/http/request-structs)
 (require json)
 (require "objects.rkt" "db.rkt")
 (require telnet/connection)
 (require "scheduler.rkt")
 (require racket/rerequire)
-(provide master-object master<%> websocket-server<%> start-scheduler! shut-down! load-master-object!)
-;(provide add-user-to-rackmud)
 
+(provide master-object master<%> websocket-server<%> start-scheduler! shut-down! load-master-object!)
 (provide yield! queue-event send/yield!)
 (provide update-certs start-webserver webserver-stop webserver)
 
