@@ -5,7 +5,10 @@
          racket/tcp openssl telnet charset racket/place racket/runtime-path
          net/base64 racket/random readline/rep-start
          (except-in "../main.rkt" rackmud:domain rackmud:telnet-port rackmud:ssl-telnet-port
-                    rackmud:http-port rackmud:https-port rackmud:servlet-path rackmud:websock-path rackmud:websock-client-path)
+                    rackmud:web-root-path
+                    rackmud:http-port rackmud:https-port rackmud:servlet-path rackmud:websock-path
+                    rackmud:websock-client-path
+                    rackmud:proxy-mode)
          "../web.rkt" "../backtrace.rkt" "../db.rkt"  "../websock.rkt"
          "../connections.rkt" "config.rkt" "new-setup.rkt" "../auth.rkt" "../parameters.rkt")
 
@@ -56,7 +59,8 @@
   (conn-mixin websock-terminal%))
 
 (define mudlib (hash-ref cfg 'mudlib-path #f))
-(define mudlib/path (and mudlib (path->complete-path (path->directory-path (simplify-path (string->path mudlib))))))
+(define mudlib/path (and mudlib (path->complete-path
+                                 (path->directory-path (simplify-path (string->path mudlib))))))
 (define mudlib-collect (string->symbol (hash-ref cfg 'mudlib-collect "mudlib")))
 (unless (module-path? mudlib-collect)
   (error 'mudlib-collection: "Expected module-path? but found ~a" mudlib-collect))
@@ -69,13 +73,15 @@
 (place-channel-put compiler-place mudlib-collect)
 
 (define rackmud-logger (make-logger #f (current-logger) 'info #f))
-(define rackmud-log-rec (make-log-receiver (current-logger) 'debug 'rackmud 'debug 'grapevine 'warning))
+(define rackmud-log-rec
+  (make-log-receiver (current-logger) 'debug 'rackmud 'debug 'grapevine 'warning))
 (current-logger rackmud-logger)
 
 
-(parameterize ([current-library-collection-paths (if mudlib/path
-                                                     (cons  mudlib/path (current-library-collection-paths))
-                                                     (current-library-collection-paths))]
+(parameterize ([current-library-collection-paths
+                (if mudlib/path
+                    (cons  mudlib/path (current-library-collection-paths))
+                    (current-library-collection-paths))]
                [current-logger rackmud-logger]
                [jwt-secret (get-jwt-secret)]
                [jwt-duration (hash-ref cfg 'jwt-duration 600)]
@@ -102,7 +108,9 @@
          (port-number? telnet-ssl-port)))
   
   (define http-port (hash-ref cfg 'webserver:port #f))
-  (define http-enabled? (port-number? http-port))
+  (define proxy-mode (hash-ref cfg 'webserver:proxy-mode #f))
+  (define unix-domain-socket (and proxy-mode (hash-ref cfg 'webserver:proxy-socket-path #f)))
+  (define http-enabled? (or unix-domain-socket (port-number? http-port)))
   
   (define https-port (hash-ref cfg 'webserver:ssl-port #f))
   (define https-enabled? (and ssl-available?
@@ -120,6 +128,7 @@
                  [rackmud:ssl-telnet-port (and telnet-ssl-enabled? telnet-ssl-port)]
                  [rackmud:http-port (and http-enabled? http-port)]
                  [rackmud:https-port (and https-enabled? https-port)]
+                 [rackmud:web-root-path (hash-ref cfg 'webserver:web-root-path "")]
                  [rackmud:servlet-path (and (or http-enabled? https-enabled?)
                                             (path-string? servlet-url)
                                             servlet-url)]
@@ -128,7 +137,8 @@
                                             socket-url)]
                  [rackmud:websock-client-path (and (or http-enabled? https-enabled?)
                                                    (path-string? socket-client-url)
-                                                   socket-client-url)])
+                                                   socket-client-url)]
+                 [rackmud:proxy-mode proxy-mode])
 
     (define telnet-encodings
       (and (or telnet-enabled? telnet-ssl-enabled?)
@@ -136,6 +146,7 @@
            (let ([encodings (map string->charset-name (hash-ref cfg 'telnet:encodings '("ASCII")))])
              ;; If they didn't include ASCII, they should have done as a last resort, since telnet MUST default to ASCII
              (if (memq 'ASCII encodings) encodings (append encodings '(ASCII))))))
+
     (define telnet-charset-seq
       (encodings->charset-req-sequence telnet-encodings))
   
@@ -153,7 +164,8 @@
           [db-port (hash-ref cfg 'database:port #f)]
           [db-sock (hash-ref cfg 'database:socket #f)])
       (when db-type
-        (database-setup (if (string? db-type) (string->symbol db-type) db-type) db-port db-sock db-srv db-db db-user db-pass)))
+        (database-setup (if (string? db-type) (string->symbol db-type) db-type)
+                        db-port db-sock db-srv db-db db-user db-pass)))
     (printf "connected in ~vms\n" (round (inexact->exact (- (current-inexact-milliseconds) t0))))
 
     ;; wait for the compiler place to finish its thing
@@ -164,9 +176,11 @@
 
     ;; With that taken care of, load the master object
   
-    (define resolved-collect (collection-file-path mudlib-module (symbol->string mudlib-collect) #:fail
+    (define resolved-collect (collection-file-path mudlib-module (symbol->string mudlib-collect)
+                                                   #:fail
                                                    (lambda (message)
-                                                     (eprintf "Error loading mudlib collect\n~a\n" message)
+                                                     (eprintf "Error loading mudlib collect\n~a\n"
+                                                              message)
                                                      (exit 1))))
   
     (let-values ([(base-lib-path module-name _) (split-path resolved-collect)])
@@ -212,9 +226,10 @@
       (and telnet-enabled?
            (thread (lambda ()
                      (let loop ()
-                       (with-handlers ([exn? (lambda (e)
-                                               (database-log 'error "Telnet-Listener" (exn-message e)
-                                                             (backtrace (exn-continuation-marks e))))])
+                       (with-handlers ([exn?
+                                        (lambda (e)
+                                          (database-log 'error "Telnet-Listener" (exn-message e)
+                                                        (backtrace (exn-continuation-marks e))))])
                          (define-values (in out) (tcp-accept telnet-serv))
                          (define-values (lip ip) (tcp-addresses in))
                          (add-telnet-user in out ip))
@@ -231,9 +246,11 @@
       (and telnet-ssl-enabled?
            (thread (lambda ()
                      (let loop ()
-                       (with-handlers ([exn? (lambda (e)
-                                               (database-log 'error "SSL-Telnet-Listener" (exn-message e)
-                                                             (backtrace (exn-continuation-marks e))))])
+                       (with-handlers ([exn?
+                                        (lambda (e)
+                                          (database-log 'error "SSL-Telnet-Listener"
+                                                        (exn-message e)
+                                                        (backtrace (exn-continuation-marks e))))])
                          (define-values (in out) (tcp-accept ssl-serv))
                          (define-values (lip ip) (tcp-addresses in))
                          (define-values (sin sout) (ports->ssl-ports in out
@@ -255,11 +272,13 @@
           (ssl-load-certificate-chain! ssl-ctxt certificate)
           (ssl-load-private-key! ssl-ctxt private-key))))
 
-    (define websock-url-prefix-length (length (explode-path (string->path (hash-ref cfg 'webserver:websock-url "socket")))))
+    (define websock-url-prefix-length
+      (length (explode-path (string->path (hash-ref cfg 'webserver:websock-url "socket")))))
 
-    (define websock-client-url/path-list (map (compose string->symbol path->string)
-                                              (explode-path (string->path
-                                                             (hash-ref cfg 'webserver:websock-client-url)))))
+    (define websock-client-url/path-list
+      (map (compose string->symbol path->string)
+           (explode-path (string->path
+                          (hash-ref cfg 'webserver:websock-client-url)))))
   
     (define (ws-conn-req ws-conn req)
       (let ([path-elements (map (compose string->symbol path/param-path)
@@ -297,6 +316,7 @@
                [else 'http+https])
          http-port
          https-port
+         unix-domain-socket
          (hash-ref cfg 'webserver:web-path "./www")
          (hash-ref cfg 'webserver:servlet-url "servlet")
          (send master-object get-servlet-handler (hash-ref cfg 'webserver:servlet-url "servlet"))
@@ -305,7 +325,8 @@
          ws-req-headers
      
          (hash-ref cfg 'ssl:certificate #f)
-         (hash-ref cfg 'ssl:private-key #f))))
+         (hash-ref cfg 'ssl:private-key #f))
+        ))
 
     (define cert-thread
       (and (or https-enabled? ssl-ctxt)
@@ -319,6 +340,16 @@
 
     (printf "started in ~vms\n" (round (inexact->exact (- (current-inexact-milliseconds) t0))))
 
+    (if (rackmud:proxy-mode)
+        (printf "Webserver running in proxy mode [~a].  Listening at ~a\n" proxy-mode (if unix-domain-socket (format "unix:~a" unix-domain-socket) (format "port ~a" http-port)))
+        (begin
+          (when http-enabled?
+            (printf "webserver started at ~a\n"
+                    (webserver-absolute-path "" (url "http" #f #f http-port #f '() '() #f))))
+          (when https-enabled?
+            (printf "webserver started at ~a\n"
+                    (webserver-absolute-path "" (url "https" #f #f https-port #f '() '() #f))))))
+    
     (define shutdown-semaphore (make-semaphore 0))
     (define (rackmud-shutdown!)
       (displayln "Shutting down...")
@@ -331,8 +362,7 @@
       (displayln "Telnet and REPL stopped...")
       (shut-down!))
 
-    ;; Finally, if running in interactive mode, start the REPL thread
-
+    
     (define rebuild-thread
       (thread
        (λ ()
@@ -341,7 +371,9 @@
            (when (cons? changes)
              (rackmud-mark-reloads changes))
            (loop)))))
-  
+
+;; Finally, if running in interactive mode, start the REPL thread
+    
     (define repl-thread
       (and (hash-ref cfg 'interactive #f)
            (thread
@@ -353,7 +385,7 @@
                              ;; todo - can parameterize some of the repl parameters to make a better interface
                              )
                 (namespace-set-variable-value! 'shutdown! shutdown!)
-                (read-eval-print-loop)
+                (let loop () (read-eval-print-loop) (loop))
                 (shutdown!))))))
 
     (displayln "Running")

@@ -153,6 +153,8 @@
   [rackmud:servlet-path:RO rackmud:servlet-path]
   [rackmud:websock-path:RO rackmud:websock-path]
   [rackmud:websock-client-path:RO rackmud:websock-client-path]
+  [rackmud:web-root-path:RO rackmud:web-root-path]
+  [rackmud:proxy-mode:RO rackmud:proxy-mode]
   ))
 
 
@@ -165,5 +167,6 @@
 (define (rackmud:servlet-path:RO) (rackmud:servlet-path))
 (define (rackmud:websock-path:RO) (rackmud:websock-path))
 (define (rackmud:websock-client-path:RO) (rackmud:websock-client-path))
-
+(define (rackmud:web-root-path:RO) (rackmud:web-root-path))
+(define (rackmud:proxy-mode:RO) (rackmud:proxy-mode))
 (module reader syntax/module-reader rackmud/main)

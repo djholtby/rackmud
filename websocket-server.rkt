@@ -20,7 +20,9 @@
          racket/async-channel
          racket/unit
          (only-in racket/tcp listen-port-number?)
-         (for-syntax racket/base))
+         (for-syntax racket/base)
+         racket/unix-socket
+         "socket-unit.rkt")
 
 
 
@@ -79,16 +81,17 @@
           (values (listof header?) any/c))))
     
    (#:connection-close? boolean?
-    #:listen-ip (or/c false/c string?)
-    #:confirmation-channel (or/c false/c async-channel?)
-    #:http-port (or/c listen-port-number? #f)
-    #:ssl-port (or/c listen-port-number? #f)
+    #:listen-ip (or/c #f string?)
+    #:confirmation-channel (or/c #f async-channel?)
+    #:http-port (or/c #f listen-port-number?)
+    #:ssl-port (or/c #f listen-port-number?)
     #:max-waiting exact-nonnegative-integer?
     #:http? boolean?
     #:ssl? boolean?
     #:force-ssl? boolean?
-    #:ssl-cert (or/c false/c path-string?)
-    #:ssl-key (or/c false/c path-string?)
+    #:socket-path (or/c #f unix-socket-path?)
+    #:ssl-cert (or/c #f path-string?)
+    #:ssl-key (or/c #f path-string?)
     #:manager manager?
     #:servlet-namespace (listof module-path?)
     #:server-root-path path-string?
@@ -105,7 +108,7 @@
     #:mime-types-path path-string?
     #:servlet-path string?
     #:servlet-regexp regexp?
-    #:log-file (or/c false/c path-string? output-port?)
+    #:log-file (or/c #f path-string? output-port?)
     #:log-format (or/c log:log-format/c log:format-req/c))
    . ->* .
    websocket-server?)])
@@ -206,7 +209,8 @@
                             (if (file-exists? p)
                                 p
                                 (build-path default-web-root "mime.types")))]
-         
+         #:socket-path
+         [socket-path #f]
          #:ssl?
          [ssl? #f]
          #:ssl-cert
@@ -283,20 +287,32 @@
   
   (websocket-server 
    (cond
+     [socket-path
+      (serve
+       #:dispatch dispatcher
+       #:confirmation-channel confirmation-channel
+       #:connection-close? connection-close?
+       #:tcp@ (tcp-unix-socket@ socket-path)
+       #:max-waiting max-waiting)]
      [(and ssl? http? force-ssl?)
       (let ([shutdown-http
-             (serve  #:dispatch (lift:make (λ (request)
-                                             (response 301 #"Moved Permanently" (current-seconds) TEXT/HTML-MIME-TYPE
-                                                       (list (make-header #"Location"
-                                                                          (string->bytes/utf-8 (format "https://~a:~a~a"
-                                                                                                       (request-host-ip request)
-                                                                                                       ssl-port
-                                                                                                       (url->string (request-uri request))))))
-                                                       (λ (out-port) (write-bytes #"HTTPS Required" out-port)))))
-                     #:confirmation-channel confirmation-channel
-                     #:connection-close? connection-close?
-                     #:listen-ip listen-ip
-                     #:port http-port)]
+             (serve
+              #:dispatch
+              (lift:make
+               (λ (request)
+                 (response 301 #"Moved Permanently" (current-seconds) TEXT/HTML-MIME-TYPE
+                           (list
+                            (make-header
+                             #"Location"
+                             (string->bytes/utf-8 (format "https://~a:~a~a"
+                                                          (request-host-ip request)
+                                                          ssl-port
+                                                          (url->string (request-uri request))))))
+                           (λ (out-port) (write-bytes #"HTTPS Required" out-port)))))
+              #:confirmation-channel confirmation-channel
+              #:connection-close? connection-close?
+              #:listen-ip listen-ip
+              #:port http-port)]
             [shutdown-https
              (serve
               #:dispatch dispatcher

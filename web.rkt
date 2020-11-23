@@ -9,12 +9,14 @@
           web-server/dispatchers/dispatch
           net/url
           net/rfc6455
+          net/cookies/common
           (for-syntax racket/base)
+          racket/tcp
           racket/stxparam
+          racket/format
           racket/class
           gregor
-          json
-          "objects.rkt" "auth.rkt"
+          "objects.rkt" "auth.rkt" "parameters.rkt"
           )
 
 (provide (all-from-out web-server/http
@@ -25,27 +27,50 @@
                        web-server/servlet/servlet-structs
                        web-server/dispatchers/dispatch
                        net/url
-                       net/rfc6455
-                       ))
+                       net/rfc6455))
+
 (provide logout-cookies request->authorized-object object->auth-cookies define-authorized-responder
-         response/text response/json)
+         response/text  
+         webserver-absolute-path)
+
+(define (simplify-path/param pp-lst)
+  (filter (λ (pp) (positive? (string-length (path/param-path pp)))) pp-lst))
+
+
+;; (webserver-absolute-path path-suffix cur-url) produces an absolute URL to path-suffix,
+;;   based on the racmud:domain and rackmud:web-root-path
+;;   cur-url, if specified, determines the host (if the parameter is not set) as well as the
+;;   method and port.
+;; webserver-absolute-path: (or/c path-string? url?) [url?] -> url?
+
+(define (webserver-absolute-path path-suffix [cur-url (url #f #f #f #f #t '() '() #f)])
+  (let ([as-url (if (url? path-suffix) path-suffix (string->url path-suffix))])
+    (url->string
+     (url (url-scheme cur-url)
+          (url-user cur-url)
+          (or (rackmud:domain) (url-host cur-url))
+          (url-port cur-url) #t
+          (simplify-path/param
+           (cons (path/param (rackmud:web-root-path) '())
+                 (url-path as-url)))
+          (url-query as-url)
+          (url-fragment as-url)))))
 
 (define jwt-cookie-name "rackmud-auth")
 (define refresh-cookie-name "rackmud-token")
 (define TEXT/PLAIN-MIME-TYPE #"text/plain; charset=utf-8")
-(define JSON-MIME-TYPE #"application/json")
 (define private-key (make-secret-salt/file "COOKIE"))
 
-(define (response/text body #:code [code 200] #:message [message #f] #:headers [headers '()] #:cookies [cookies '()])
-  (response/full code message (current-seconds) TEXT/PLAIN-MIME-TYPE (append headers (map cookie->header cookies)) (list body)))
+(define (response/text body #:code [code 200] #:message [message #f]
+                       #:headers [headers '()] #:cookies [cookies '()])
+  (response/full code message (current-seconds)
+                 TEXT/PLAIN-MIME-TYPE
+                 (append headers (map cookie->header cookies)) (list (if (bytes? body) body (string->bytes/utf-8 (~a body))))))
 
-(define (response/json jsexpr #:code [code 200] #:message [message #f] #:headers [headers '()] #:cookies [cookies '()])
-  (response/full code message (current-seconds) JSON-MIME-TYPE (append headers (map cookie->header cookies))
-                 (jsexpr->string jsexpr)))
 
 (define logout-cookies
-   (list (make-cookie jwt-cookie-name "" #:expires (date* 0 0 0 1 1 1970 4 0 #f 0 0 "UTC"))
-         (logout-id-cookie refresh-cookie-name)))
+  (list (make-cookie jwt-cookie-name "" #:expires (date* 0 0 0 1 1 1970 4 0 #f 0 0 "UTC"))
+        (logout-id-cookie refresh-cookie-name)))
 
 (define (jwt->cookie jwt)
   (make-cookie jwt-cookie-name jwt #:http-only? #t #:max-age (jwt-duration)))

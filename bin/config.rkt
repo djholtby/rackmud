@@ -17,10 +17,11 @@
            (webserver:www-path . "/www")
            (webserver:servlet-url . "/servlet")
            (webserver:websock-url . "/socket")
+           (webserver:server-directory . "/")
+           (webserver:proxy-mode . #f)
            (filename . ,default-config-name)))
 
-
-
+     
 (define (config-merge base adjustments)
   (hash-union base adjustments
               #:combine

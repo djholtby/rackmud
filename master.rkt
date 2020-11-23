@@ -66,7 +66,7 @@ The connection manager will send a telnet-object to it whenever a user connects.
 (define (webserver-stop)
   (stop-websocket-server webserver))
                       
-(define (start-webserver mode port ssl-port static-root servlet-url servlet-handler websock-url ws-conn-req ws-conn-headers
+(define (start-webserver mode port ssl-port socket-path static-root servlet-url servlet-handler websock-url ws-conn-req ws-conn-headers
                          certificate private-key)
   (when (and (not (eq? mode 'https))
              (not port))
@@ -76,6 +76,9 @@ The connection manager will send a telnet-object to it whenever a user connects.
     (raise-argument-error 'start-webserver "listen-port-number?" ssl-port))
   (unless (lazy-ref? master-object)
     (error 'start-webserver "master-object not found.  webserver must be started AFTER the object persistence layer"))
+  (when (and socket-path (file-exists? socket-path))
+    (delete-file socket-path))
+  
   (let* ([ssl-redirect? (eq? mode 'http->https)]
          [confirmation-channel (make-async-channel)]
          [the-server (serve/servlet+websockets
@@ -84,6 +87,7 @@ The connection manager will send a telnet-object to it whenever a user connects.
                       #:confirmation-channel confirmation-channel
                       #:http-port port
                       #:ssl-port ssl-port
+                      #:socket-path socket-path
                       #:http? (not (eq? mode 'https))
                       #:ssl? (not (eq? mode 'http))
                       #:listen-ip #f ; TODO give config control of this
@@ -98,14 +102,20 @@ The connection manager will send a telnet-object to it whenever a user connects.
                       #:websocket-path websock-url
                       #:websocket-regexp (regexp (let ([quoted-url (root-url-quote websock-url)])
                                                  (format "^~a$|^~a/" quoted-url quoted-url))))]
-         [bound-ports (if (and port ssl-port)
-                          (list (async-channel-get confirmation-channel)
-                                (async-channel-get confirmation-channel)
-                                #f)
-                          (list (async-channel-get confirmation-channel) #f))])
-    (unless (and (memq port bound-ports)
+         [bound-ports (if socket-path
+                          (list (async-channel-get confirmation-channel) #f)
+                          (if
+                           
+                           (and port ssl-port)
+                           (list (async-channel-get confirmation-channel)
+                                 (async-channel-get confirmation-channel)
+                                 #f)
+                           (list (async-channel-get confirmation-channel) #f)))])
+    (unless (and (memq (if socket-path 1 port) bound-ports)
                  (memq ssl-port bound-ports))
       (error 'start-webserver "Failed to bind to ports: ~v" bound-ports))
+    (when socket-path
+      (file-or-directory-permissions socket-path #o660))
     (set! webserver the-server)))
     
 (define (start-scheduler! thread-count)

@@ -1,7 +1,7 @@
 #lang racket/base
 
 (require net/tcp-sig racket/contract racket/unix-socket racket/unit web-server/web-server
-         web-server/http/xexpr racket/async-channel web-server/servlet-env
+         web-server/http/xexpr web-server/servlet-env
          web-server/servlet-dispatch)
 
 (provide/contract
