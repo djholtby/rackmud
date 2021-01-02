@@ -1183,12 +1183,14 @@
 ||||||||||||||||||||||||||||||||||||||||||||||||#
 
 (define (make-authorization obj [duration #f])
-  (values (make-auth-jwt (send obj get-id))
-          (database-make-token (send obj get-id) duration)))
+  (let ([duration/actual (if (symbol? duration) #f duration)]
+        [session? (eq? duration 'session)])
+  (values (make-auth-jwt (send/rackmud obj get-id))
+          (database-make-token (send/rackmud obj get-id) duration/actual session?))))
 
 (define (get-authorization jwt token)
-  (let ([jwt-id (verify-auth-jwt jwt)])
-    (if jwt
+  (let ([jwt-id (and (string? jwt) (verify-auth-jwt jwt))])
+    (if jwt-id
         (values (lazy-ref jwt-id #f) #f #f #f)
         (let-values ([(oid duration new-jwt new-token)
                       (refresh-jwt token)])
@@ -1197,13 +1199,15 @@
 (define (get-all-auth-tokens obj)
   (database-get-all-tokens (lazy-ref-id obj)))
 
+(define (prune-auth-tokens)
+  (database-prune-tokens))
 
 (define (expire-auth-token obj seq)
-  (database-expire-token (lazy-ref-id obj) seq))
+  (database-expire-token (if (lazy-ref? obj) (lazy-ref-id obj) obj) seq))
 
 
 (define (expire-all-auth-tokens obj)
-  (database-expire-all-tokens (lazy-ref obj)))
+  (database-expire-all-tokens (lazy-ref-id obj)))
 
 
 #|||||||||||||||||||||||||||||||||||||||||||||||
@@ -1237,6 +1241,8 @@
     
 ;; get-unloaded-object: Nat -> (U (Instanceof MudObject%) #f)
 (define (get-unloaded-object id)
+  (unless (exact-nonnegative-integer? id)
+    (raise-argument-error 'database-load-object "exact-nonnegative-integer?" id))
   ;(unless (database-connected?) (error "database not connected"))
   ;"SELECT cid, created, saved, name, deleted, fields FROM objects WHERE oid = ~a"
   (define-values
