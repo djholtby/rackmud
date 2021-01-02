@@ -106,6 +106,7 @@ CREATE TABLE auth (
    oid BIGINT NOT NULL REFERENCES objects,
    issued TIMESTAMPTZ NOT NULL DEFAULT now(),
    expires TIMESTAMPTZ,
+   session BOOLEAN NOT NULL DEFAULT false,
    PRIMARY KEY(seq)
 );  
 

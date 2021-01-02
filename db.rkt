@@ -6,7 +6,7 @@
          database-save-object database-new-object database-get-object database-get-singleton database-make-singleton
          database-connected? database-disconnect database-get-cid! load-class file->cids set-database-connection!
          database-make-token database-token-refresh database-get-all-tokens database-expire-token database-expire-all-tokens
-         database-create-field-index database-get-field-index-ids
+         database-create-field-index database-get-field-index-ids database-prune-tokens parse-sig-token
 
          field-search-array field-search-array/and field-search-array/or
          field-search-op
@@ -120,20 +120,23 @@
 
 (define new-token-stmt
   (virtual-statement
-   "INSERT INTO auth_testing.auth (oid, expires, sig) values ($1, (now() + $2 * interval '1 second'), $3) RETURNING seq"))
+   "INSERT INTO auth (oid, expires, sig, session) values ($1, (now() + $2 * interval '1 second'), $3, $4) RETURNING seq"))
 
 (define get-id-for-token-stmt
   (virtual-statement
    (string-append "SELECT oid,((expires IS NOT NULL) and (expires <= now())) AS expired , EXTRACT(epoch FROM (expires - issued))::int AS duration "
-                  "FROM auth_testing.auth WHERE seq = $1 AND sig = $2" )))
+                  "FROM auth WHERE seq = $1 AND sig = $2" )))
 
 (define tokens-for-oid-stmt
   (virtual-statement
    "SELECT seq FROM auth where oid = $1"))
 
-(define expire-token-stmt
-  (virtual-statement "DELETE FROM auth WHERE seq = $1"))
+(define prune-expired-tokens-stms
+  (virtual-statement "DELETE FROM auth WHERE expires <= now()"))
 
+(define expire-token-stmt
+  (virtual-statement "DELETE FROM auth WHERE oid = $1 AND (seq = $2 OR session IS TRUE)"))
+  
 (define expire-all-tokens-stmt
   (virtual-statement
    "DELETE FROM auth WHERE oid = $1"))
@@ -445,10 +448,10 @@ database-get-cid! : Symbol Path -> Nat
 ;;  and returns that token
 ;; database-make-token: OID (or #f Nat) -> Token
 
-(define (database-make-token oid [duration #f])
+(define (database-make-token oid [duration #f] [session #f])
   (let* ([sig (uuid-string)]
          [sig/hash (sha384 (string->bytes/utf-8 sig))]
-         [seq (query-value _dbc_ new-token-stmt oid (false->sql-null duration) sig/hash)])
+         [seq (query-value _dbc_ new-token-stmt oid (false->sql-null duration) sig/hash session)])
     (string-append seq "&" sig)))
   
 ;; parse-sig-token: Str -> (or #f UUID) (or #f UUID)
@@ -473,7 +476,7 @@ database-get-cid! : Symbol Path -> Nat
        (let* ([token-info (and seq (query-maybe-row _dbc_ get-id-for-token-stmt seq (sha384 (string->bytes/utf-8 sig))))]
            [id (and token-info (vector-ref token-info 0))]
            [expired? (and token-info (vector-ref token-info 1))])
-      (when token-info (query-exec _dbc_ expire-token-stmt seq))
+      (when token-info (query-exec _dbc_ expire-token-stmt id seq))
       (if (and id (not expired?))
           (values id
                   (sql-null->false (vector-ref token-info 2))
@@ -481,13 +484,14 @@ database-get-cid! : Symbol Path -> Nat
           (values id #f #f)))))))
 
 
-
+(define (database-prune-tokens)
+  (query-exec _dbc_ prune-expired-tokens-stms))
 
 (define (database-get-all-tokens oid)
   (query-list _dbc_ tokens-for-oid-stmt oid))
 
-(define (database-expire-token seq)
-  (query-exec _dbc_ expire-token-stmt seq))
+(define (database-expire-token oid seq)
+  (query-exec _dbc_ expire-token-stmt oid seq))
 
 (define (database-expire-all-tokens oid)
   (query-exec _dbc_ expire-all-tokens-stmt oid))
