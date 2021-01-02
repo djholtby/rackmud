@@ -9,7 +9,7 @@
                     rackmud:http-port rackmud:https-port rackmud:servlet-path rackmud:websock-path
                     rackmud:websock-client-path
                     rackmud:proxy-mode)
-         "../web.rkt" "../backtrace.rkt" "../db.rkt"  "../websock.rkt"
+         "../web.rkt" "../backtrace.rkt" "../db.rkt"  "../websock.rkt" "../crypto/pepper.rkt"
          "../connections.rkt" "config.rkt" "new-setup.rkt" "../auth.rkt" "../parameters.rkt")
 
 (define-namespace-anchor anc)
@@ -174,6 +174,8 @@
       (displayln "\nmudlib is not in a buildable state.  Aborting!\n" (current-error-port))
       (exit 1))
 
+    (void (get-pepper))
+
     ;; With that taken care of, load the master object
   
     (define resolved-collect (collection-file-path mudlib-module (symbol->string mudlib-collect)
@@ -185,9 +187,9 @@
   
     (let-values ([(base-lib-path module-name _) (split-path resolved-collect)])
       (set-lib-path! base-lib-path))
-  
+    
     ;; Next, start the scheduler so events can be processed
-  
+    
     (start-scheduler! (hash-ref cfg 'thread-count))  
     (display "Loading Master Object...")
     (set! t0 (current-inexact-milliseconds))
