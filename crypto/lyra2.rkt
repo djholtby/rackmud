@@ -184,11 +184,11 @@
   (absorb sponge block)
   (vector-ref sponge 0))
 
-(define lyra2-default-cost 1)
-(define lyra2-default-row-count 64)
-(define lyra2-default-col-count 64)
+(define lyra2-default-cost 2)
+(define lyra2-default-row-count 96)
+(define lyra2-default-col-count 96)
 
-(define (Lyra2/phc password [outlen 64] [t_cost lyra2-default-cost] [R lyra2-default-row-count] [C lyra2-default-col-count])
+(define (Lyra2/phc password [outlen 128] [t_cost lyra2-default-cost] [R lyra2-default-row-count] [C lyra2-default-col-count])
   (define salt (crypto-random-bytes outlen))
   (define hash (Lyra2 password salt outlen t_cost R C ))
   (phc 'lyra2 (make-immutable-hash `((t . ,t_cost) (r . ,R) (c . ,C) (len . ,outlen))) salt hash))
