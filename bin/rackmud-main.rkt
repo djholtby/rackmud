@@ -352,6 +352,21 @@
             (printf "webserver started at ~a\n"
                     (webserver-absolute-path "" (url "https" #f #f https-port #f '() '() #f))))))
     
+    (define (rackmud-rebuild!)
+      (define changes-or-exn
+        (place-channel-put/get compiler-place #t))
+      (if (cons? changes-or-exn)
+          (rackmud-mark-reloads changes-or-exn)
+          (log-message rackmud-logger 'error 'compiler-place changes-or-exn))
+      (cons? changes-or-exn))
+
+    (define rebuild-thread
+      (thread
+       (λ ()
+         (let loop ()
+           (sync rebuild-channel)
+           (rackmud-rebuild!)
+           (loop)))))
     (define shutdown-semaphore (make-semaphore 0))
     (define (rackmud-shutdown!)
       (displayln "Shutting down...")
@@ -361,10 +376,10 @@
       (when ssl-thread (kill-thread ssl-thread))
       (when ssl-serv (tcp-close ssl-serv))
       (when repl-thread (kill-thread repl-thread))
+      (kill-thread rebuild-thread)
       (displayln "Telnet and REPL stopped...")
-      (shut-down!))
-
-    
+      (shut-down!))     
+    #|
     (define rebuild-thread
       (thread
        (λ ()
@@ -373,7 +388,7 @@
            (when (cons? changes)
              (rackmud-mark-reloads changes))
            (loop)))))
-
+|#
 ;; Finally, if running in interactive mode, start the REPL thread
     
     (define repl-thread
@@ -381,12 +396,18 @@
            (thread
             (lambda ()
               (define ns (namespace-anchor->namespace anc))
+
               (define (shutdown!)
                 (semaphore-post shutdown-semaphore))
+
+              (define (rebuild!)
+                (channel-put rebuild-channel 'go))
+              
               (parameterize ([current-namespace ns]
                              ;; todo - can parameterize some of the repl parameters to make a better interface
                              )
                 (namespace-set-variable-value! 'shutdown! shutdown!)
+                (namespace-set-variable-value! 'rebuild! rebuild!)
                 (let loop () (read-eval-print-loop) (loop))
                 (shutdown!))))))
 

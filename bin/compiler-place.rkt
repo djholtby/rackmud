@@ -1,6 +1,6 @@
 #lang racket/base
 
-(require compiler/compiler compiler/option racket/place racket/set)
+(require compiler/compiler compiler/option racket/place racket/set racket/exn)
 
 (provide compiler-place-main)
 
@@ -33,9 +33,7 @@
                                         (λ () (close-output-port o))))
                     ])
       (with-handlers ([exn? (λ (e)
-                              (place-channel-put p-chan #f)
-                              (raise e)
-                              (set! failed? #t))])
+                              (place-channel-put p-chan (exn->string e)))])
         (compile-directory-zos (collection-path (symbol->string mudlib-collect))
                                (λ (name thunk)
                                  (if (eq? name 'name) (symbol->string mudlib-collect) (thunk)))
@@ -43,12 +41,11 @@
                                #:skip-doc-sources? #t))
       (unless failed?
         (place-channel-put p-chan #t)
-        (eprintf "Watching ~a mudlib files!\n" (set-count collection-files))
         
-
         (let loop ()
           (define changes '())
-          (apply sync (map filesystem-change-evt (set->list collection-files)))
+          ;(apply sync (map filesystem-change-evt (set->list collection-files)))
+          (sync p-chan)
           (sleep 1)
           (with-handlers ([exn? (λ (e) (log-message (current-logger) 'error (format "error recompiling mudlib: ~a" (exn-message e))
                                                     (exn-continuation-marks e)))])

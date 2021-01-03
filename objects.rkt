@@ -14,7 +14,7 @@
 (provide temp-object%)
 
 (provide trigger-reload! save-all-objects lazy-ref lazy-ref? touch! make-lazyref save-object get-singleton
-         database-setup new/rackmud rackmud-mark-reloads
+         database-setup new/rackmud rackmud-mark-reloads rebuild-channel
          instantiate/rackmud make-object/rackmud send/rackmud send*/rackmud get-field/rackmud set-field!/rackmud is-a?/rackmud is-a?/c/rackmud
          object?/rackmud object=?/rackmud object-or-false=?/rackmud object->vector/rackmud object-interface/rackmud
          object-method-arity-includes?/rackmud field-names/rackmud object-info/rackmud dynamic-send/rackmud
@@ -26,7 +26,7 @@
 (define class-dep-sema (make-semaphore 1))
 (define cid->paths (make-hasheqv))
 (define path->cids (make-hash))
-
+(define rebuild-channel (make-channel))
 
 
 (define save/k (generate-member-key))
