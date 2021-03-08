@@ -3,7 +3,7 @@
 (define t0 (current-inexact-milliseconds))
 (require net/rfc6455 net/url web-server/http/request-structs
          racket/tcp openssl telnet charset racket/place racket/runtime-path
-         net/base64 racket/random readline/rep-start
+         net/base64 racket/random readline/rep-start unix-signals
          (except-in "../main.rkt" rackmud:domain rackmud:telnet-port rackmud:ssl-telnet-port
                     rackmud:web-root-path
                     rackmud:http-port rackmud:https-port rackmud:servlet-path rackmud:websock-path
@@ -71,6 +71,7 @@
 
 (place-channel-put compiler-place mudlib/path)
 (place-channel-put compiler-place mudlib-collect)
+(place-channel-put compiler-place (hash-ref cfg 'compile-mudlib-on-launch? #t))
 
 (define rackmud-logger (make-logger #f (current-logger) 'info #f))
 (define rackmud-log-rec
@@ -169,8 +170,8 @@
     (printf "connected in ~vms\n" (round (inexact->exact (- (current-inexact-milliseconds) t0))))
 
     ;; wait for the compiler place to finish its thing
-  
-    (unless (place-channel-get compiler-place)
+    (define initial-build-response (place-channel-get compiler-place))
+    (unless (eq? #t initial-build-response)
       (displayln "\nmudlib is not in a buildable state.  Aborting!\n" (current-error-port))
       (exit 1))
 
@@ -337,13 +338,17 @@
                            [pkey-evt (filesystem-change-evt (hash-ref cfg 'ssl:private-key))])
                        (let loop ()
                          (sync cert-evt pkey-evt)
-                         (sleep 1/10) ; just in case there's a delay between one changing and the other 
+                         (sleep 1/2) ; just in case there's a delay between the first change
                          (reload-certificates!)))))))
 
     (printf "started in ~vms\n" (round (inexact->exact (- (current-inexact-milliseconds) t0))))
 
     (if (rackmud:proxy-mode)
-        (printf "Webserver running in proxy mode [~a].  Listening at ~a\n" proxy-mode (if unix-domain-socket (format "unix:~a" unix-domain-socket) (format "port ~a" http-port)))
+        (printf "Webserver running in proxy mode [~a].  Listening at ~a\n"
+                proxy-mode
+                (if unix-domain-socket
+                    (format "unix:~a" unix-domain-socket)
+                    (format "port ~a" http-port)))
         (begin
           (when http-enabled?
             (printf "webserver started at ~a\n"
@@ -355,10 +360,10 @@
     (define (rackmud-rebuild!)
       (define changes-or-exn
         (place-channel-put/get compiler-place #t))
-      (if (cons? changes-or-exn)
-          (rackmud-mark-reloads changes-or-exn)
-          (log-message rackmud-logger 'error 'compiler-place changes-or-exn))
-      (cons? changes-or-exn))
+      (match changes-or-exn
+        [(? cons?) (rackmud-mark-reloads changes-or-exn) #t]
+        [(? string?) (log-message rackmud-logger 'error 'compiler-place changes-or-exn) #f]
+        [else #t]))
 
     (define rebuild-thread
       (thread
@@ -379,16 +384,7 @@
       (kill-thread rebuild-thread)
       (displayln "Telnet and REPL stopped...")
       (shut-down!))     
-    #|
-    (define rebuild-thread
-      (thread
-       (λ ()
-         (let loop ()
-           (define changes (place-channel-get compiler-place))
-           (when (cons? changes)
-             (rackmud-mark-reloads changes))
-           (loop)))))
-|#
+   
 ;; Finally, if running in interactive mode, start the REPL thread
     
     (define repl-thread
@@ -397,25 +393,23 @@
             (lambda ()
               (define ns (namespace-anchor->namespace anc))
 
-              (define (shutdown!)
+              (define (shutdown! [code 0])
                 (semaphore-post shutdown-semaphore))
 
               (define (rebuild!)
                 (channel-put rebuild-channel 'go))
               
-              (parameterize ([current-namespace ns]
-                             ;; todo - can parameterize some of the repl parameters to make a better interface
-                             )
+              (parameterize ([current-namespace ns])
                 (namespace-set-variable-value! 'shutdown! shutdown!)
                 (namespace-set-variable-value! 'rebuild! rebuild!)
-                (let loop () (read-eval-print-loop) (loop))
-                (shutdown!))))))
+                (namespace-set-variable-value! 'exit shutdown!)
+                (let loop () (read-eval-print-loop) (loop)))))))
 
     (displayln "Running")
-
+    (capture-signal! 'SIGTERM)
     (with-handlers ([exn:break?
                      (lambda (e)
                        (log-info "User Break - Shutting Down")
                        (rackmud-shutdown!))])
-      (semaphore-wait shutdown-semaphore)
+      (sync shutdown-semaphore next-signal-evt)
       (rackmud-shutdown!))))
