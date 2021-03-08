@@ -143,16 +143,19 @@
 
     (define telnet-encodings
       (and (or telnet-enabled? telnet-ssl-enabled?)
-           ;; convert the encodings list from the config file into the names that (mostly) always work with iconv
+           ;; convert the encodings list from the config file into the names that work with iconv
            (let ([encodings (map string->charset-name (hash-ref cfg 'telnet:encodings '("ASCII")))])
-             ;; If they didn't include ASCII, they should have done as a last resort, since telnet MUST default to ASCII
+             ;; If they didn't include ASCII, they should have done as a last resort
              (if (memq 'ASCII encodings) encodings (append encodings '(ASCII))))))
 
     (define telnet-charset-seq
       (encodings->charset-req-sequence telnet-encodings))
   
     (unless (or telnet-enabled? telnet-ssl-enabled? http-enabled? https-enabled?)
-      (error 'rackmud "telnet and websock are both disabled -- rackmud must have at least some kind of outside connection!"))
+      (error 'rackmud
+             (string-append
+              "telnet and websock are both disabled --"
+              " rackmud must have at least some kind of outside connection!")))
   
     (display "Establishing Database Connection...")
     (set! t0 (current-inexact-milliseconds))
