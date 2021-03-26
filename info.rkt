@@ -4,7 +4,13 @@
 (define pkg-name "rackmud")
 (define pkg-authors '(djholtby))
 (define version "0.01")
-(define deps '("charset"
+(define deps '("no-echo"
+               "net-cookies-lib"
+               "net-lib"
+               "parser-tools-lib"
+               "unix-signals"
+               "unix-socket-lib"
+               "charset"
                "net-jwt"
                "readline-lib"
                "sha"

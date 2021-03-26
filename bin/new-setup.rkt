@@ -1,17 +1,20 @@
 #lang racket/base
 
-(require racket/string racket/match racket/format racket/list racket/class racket/tcp "../menu.rkt" "../db.rkt" "config.rkt"
-         charset racket/undefined db/base racket/pretty racket/runtime-path racket/file
-         (for-syntax racket/base))
+(require racket/string racket/match racket/format racket/list racket/class racket/tcp racket/port
+         charset racket/undefined db/base racket/pretty racket/runtime-path racket/file racket/system
+         (for-syntax racket/base)
+         "../menu.rkt" "../db.rkt" "config.rkt")
 
 (provide rackmud-configure)
 
 ;(require racket/port racket/system)
-;(define terminal-width (min 120 (or (string->number (string-trim (with-output-to-string (lambda () (system "tput cols"))))) 80)))
+(define terminal-width (min 120
+                            (or (string->number (string-trim (with-output-to-string
+                                                               (λ () (system "tput cols")))))
+                                    80)))
 
-(define terminal-width 80)
+;(define terminal-width 80)
 (define-runtime-path HERE ".")
-;(define (make-rackmud-db-connection db-type db-port db-sock db-srv db-db db-user db-pass)
 
 (define (touch filename)
   (unless (file-exists? filename)
@@ -48,8 +51,9 @@
   (with-handlers ([exn? (lambda (e) #f)])
     (make-rackmud-db-connection db-type db-port db-sock db-srv db-db db-user db-pass)))
 
-;; (verify-db-settings cfg) produces #f if cfg contains invalid database settings, 'no-schema if the connection
-;;   can be established but it does not contain the rackmud tables, or the version of the rackmud tables present.
+;; (verify-db-settings cfg) produces #f if cfg contains invalid database settings,
+;;   'no-schema if the connection can be established but it does not contain the rackmud tables,
+;;   or the version of the rackmud tables present.
 (define (verify-db-settings cfg)
   (define conn (cfg->conn cfg))
   (and conn (begin0 (or (rackmud-db-version conn) 'no-schema) (disconnect conn))))
@@ -69,7 +73,8 @@
   (unless (string=? issues "")
     (error 'save-config "Cannot save a config with invalid settings"))
   (define out (open-output-file filename #:exists 'truncate/replace))
-  (define new-cfg  (reverse (filter cdr (map (lambda (sym) (cons sym (hash-ref cfg sym #f))) (hash-values am)))))
+  (define new-cfg
+    (reverse (filter cdr (map (lambda (sym) (cons sym (hash-ref cfg sym #f))) (hash-values am)))))
   (parameterize ([pretty-print-columns 160])
     (pretty-print new-cfg out 1))
   (close-output-port out))
@@ -141,20 +146,20 @@
 
   
 (define new-install-menu%
-  (class menu%
-    (super-new)
+  (class terminal-menu%
+    
     (init configuration)
     (define cfg configuration)
-    (define conn? #t)
     (define database-version #f)
     (define action-map (make-hasheqv))
     (define error-table (make-hasheq))
     (define issues "")
-    (define return-status #f)
 
-    (define/public (get-return-status)
-      return-status)
+    
+    (inherit transmit)
 
+    (super-new)
+    
     (define (config-issues cfg)
       (define out (open-output-string))
       (hash-clear! error-table)
@@ -411,15 +416,8 @@
       (get-output-string out))
 
 
-    (define/override (transmit . messages)
-      (for ([message (in-list messages)])
-        (match message
-          [(? string?) (display message)]
-          [(? number?) (display message)]
-          [(? eof-object?) (set! return-status #f) (set! conn? #f)]
-          [(? boolean?) (set! return-status message) (set! conn? #f)])))
   
-    (define/override (connected?) conn?)
+    
     (define-menu-fsm (msg)
       [start
        [(transmit "Configuration file not found.\nWould you like to create one now?\n") #f]
@@ -484,8 +482,12 @@
         (cond [(string=? tmsg "") 'confirm-settings]
               [else (hash-set! cfg 'database:username tmsg) 'confirm-settings])]]
       [database:password
-       [(transmit "Enter database password, or press [Enter] if database login does not require a password\n") #f]
+       [(transmit "Enter database password, or press [Enter] if database login")
+        (transmit " does not require a password\n")
+        (transmit 'no-echo)
+        #f]
        [
+        (transmit 'echo)
         (define tmsg (string-trim msg))
         (cond [(string=? tmsg "") (hash-set! cfg 'database:password #f) 'confirm-settings]
               [else (hash-set! cfg 'database:password tmsg) 'confirm-settings])]]
@@ -698,18 +700,16 @@
                (hash-set! cfg 'filename tmsg)
                'confirm-settings])]])))
 
-(define (rackmud-configure current-config #:start [start 'start])
+(define (rackmud-configure current-config #:start [start 'start] #:in [in (current-input-port)])
 
   (define new-config (hash-copy current-config))
   (define new-menu
-    (new new-install-menu% [configuration new-config] [initial-state start] [enter-on-create? #t]))
-  
-  (let loop ()
-    (when (send new-menu connected?)
-      (let ([line (read-line)])
-        (unless (eof-object? line)
-          (send new-menu receive line)
-          (loop)))))
+    (new new-install-menu%
+         [configuration new-config]
+         [initial-state start]
+         [enter-on-create? #t]
+         [in in]))
+  (send new-menu input-loop)
   (and (eq? #t (send new-menu get-return-status)) new-config))
 ;(if (eq? #t return-status) new-config #f))
 

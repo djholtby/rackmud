@@ -47,8 +47,7 @@
 (define missing-file? (hash-ref cfg 'no-file? #f))
 
 (when missing-file?
-  
-  (set! cfg (rackmud-configure cfg))
+  (set! cfg (rackmud-configure cfg #:in pre-readline-input-port))
   (unless cfg
     (exit 1)))
 
@@ -329,10 +328,8 @@
          (hash-ref cfg 'webserver:websock-url "socket")
          ws-conn-req
          ws-req-headers
-     
          (hash-ref cfg 'ssl:certificate #f)
-         (hash-ref cfg 'ssl:private-key #f))
-        ))
+         (hash-ref cfg 'ssl:private-key #f))))
 
     (define cert-thread
       (and (or https-enabled? ssl-ctxt)

@@ -1,11 +1,11 @@
 #lang racket/base
 
-(require (for-syntax racket/base) racket/class racket/contract racket/bool racket/list racket/stxparam "objects.rkt" "connections.rkt"
+(require (for-syntax racket/base) racket/class racket/contract  "objects.rkt" "connections.rkt"
          "master.rkt"
-         telnet/connection racket/match)
+         telnet/connection racket/match no-echo)
 
-;(provide vars (rename-out [transmit/param transmit] [set-state!/param set-state!] ) msg make-menu menu% new-telnet-menu)
-(provide menu% menu+connection% define-menu-fsm)
+
+(provide menu% terminal-menu% menu+connection% define-menu-fsm)
 
 #|(define-syntax-parameter set-state!/param (syntax-rules ()))
 (define-syntax-parameter transmit/param (syntax-rules ()))
@@ -45,7 +45,9 @@
     (define/public (get-state)
       state)
     
-    (define/public (set-state! new-state #:allow-epsilon? [allow-epsilon? #t] #:trigger? [trigger? #t])
+    (define/public (set-state! new-state
+                               #:allow-epsilon? [allow-epsilon? #t]
+                               #:trigger? [trigger? #t])
       (set! state new-state)
       (when trigger?
         (define epsilon-state (enter))
@@ -54,6 +56,57 @@
 
     (when enter-on-create? (enter))))
 
+(define terminal-menu%
+  (class menu%
+    (init [in (current-input-port)]
+          [out (current-output-port)]
+          [stars? #t])
+    (define in-port in)
+    (define out-port out)
+    (define use-stars? stars?)
+    (define echo? #t)
+    (define conn? #t)
+    (define return-status #f)
+    (super-new)
+
+    (define/override (connected?) conn?)
+
+    
+    (define/public (get-return-status)
+      return-status)
+
+    (define/public (set-return-status! v)
+      (set! return-status v))
+
+    (define/override (transmit . messages)
+      (for ([message (in-list messages)])
+        (match message
+          ['echo (set! echo? #t)]
+          ['no-echo (set! echo? #f)]
+          [(? string?) (display message out-port)]
+          [(? number?) (display message out-port)]
+          [(? eof-object?) (set! return-status #f) (set! conn? #f)]
+          [(? boolean?) (set! return-status message) (set! conn? #f)])))
+
+    
+    (define/public (input-loop)
+      (let loop ()
+        (when (send this connected?)
+          (let ([line (if echo?
+                          (read-line in-port)
+                          (read-line/password #:in in-port #:out out-port #:stars? use-stars?))])
+            (unless (eof-object? line)
+              (send this receive line)
+              (loop))))))))
+    
+    
+    
+
+
+(define has-setup-menu<%>
+  (interface (master<%>)
+    [setup-complete? (->m any/c)]
+    [get-setup-menu (->*m (output-port?) () #:rest (listof any/c) (is-a?/c menu%))]))
 
 
 (define menu+connection%
