@@ -3,14 +3,17 @@
 (define t0 (current-inexact-milliseconds))
 (require net/rfc6455 net/url web-server/http/request-structs
          racket/tcp openssl telnet charset racket/place racket/runtime-path
-         net/base64 racket/random readline/rep-start unix-signals
+         net/base64 racket/random unix-signals racket/system no-echo
          (except-in "../main.rkt" rackmud:domain rackmud:telnet-port rackmud:ssl-telnet-port
                     rackmud:web-root-path
                     rackmud:http-port rackmud:https-port rackmud:servlet-path rackmud:websock-path
                     rackmud:websock-client-path
                     rackmud:proxy-mode)
          "../web.rkt" "../backtrace.rkt" "../db.rkt"  "../websock.rkt" "../crypto/pepper.rkt"
-         "../connections.rkt" "config.rkt" "new-setup.rkt" "../auth.rkt" "../parameters.rkt")
+         "../connections.rkt" "config.rkt" "new-setup.rkt" "../auth.rkt" "../parameters.rkt"
+         "../menu.rkt")
+
+(require readline/rep-start)
 
 (define-namespace-anchor anc)
 
@@ -45,6 +48,10 @@
 (define-runtime-path COMPILER-PLACE "./compiler-place.rkt")
 
 (define missing-file? (hash-ref cfg 'no-file? #f))
+
+(define (in-tmux?)
+  (and (environment-variables-ref (current-environment-variables) #"TMUX") #t))
+
 
 (when missing-file?
   (set! cfg (rackmud-configure cfg #:in pre-readline-input-port))
@@ -175,6 +182,7 @@
     (define initial-build-response (place-channel-get compiler-place))
     (unless (eq? #t initial-build-response)
       (displayln "\nmudlib is not in a buildable state.  Aborting!\n" (current-error-port))
+      (displayln initial-build-response (current-error-port))
       (exit 1))
 
     (void (get-pepper))
@@ -199,9 +207,18 @@
   
     (load-master-object! resolved-collect
                          (string->symbol (hash-ref cfg 'master-classname "custom-master%")))
-  
+
     (printf "loaded in ~vms\n" (round (inexact->exact (- (current-inexact-milliseconds) t0))))
 
+    (when (is-a? master-object has-setup-menu<%>)
+      (displayln "master object has setup menu")
+      ;(displayln (send master-object setup-complete?))
+      (unless (eq? #t (send master-object setup-complete?))
+        (displayln "Master Object has a setup menu that has not been completed.  Starting menu...")
+        (send master-object run-setup-menu! pre-readline-input-port (current-output-port))))
+        
+      
+    
     (define (add-telnet-user in out ip [secure? #f])
       (define conn (new custom-telnet% [in in] [out out] [ip ip] [secure? secure?]
                         [telopts '(echo compress2 gmcp naws ttype charset binary mssp mxp)]
@@ -380,21 +397,27 @@
       (when telnet-serv (tcp-close telnet-serv))
       (when ssl-thread (kill-thread ssl-thread))
       (when ssl-serv (tcp-close ssl-serv))
-      (when repl-thread (kill-thread repl-thread))
+      (when repl-thread
+        (break-thread repl-thread 'terminate))
       (kill-thread rebuild-thread)
       (displayln "Telnet and REPL stopped...")
       (shut-down!))     
    
-;; Finally, if running in interactive mode, start the REPL thread
+    ;; Finally, if running in interactive mode, start the REPL thread
     
     (define repl-thread
       (and (hash-ref cfg 'interactive #f)
            (thread
             (lambda ()
               (define ns (namespace-anchor->namespace anc))
-
+              (define old-error-display-handler (error-display-handler))
+              (error-display-handler (λ (msg exn)
+                                       (unless (exn:break:terminate? exn)
+                                         (old-error-display-handler msg exn))))
               (define (shutdown! [code 0])
-                (semaphore-post shutdown-semaphore))
+                (semaphore-post shutdown-semaphore)
+                (break-thread (current-thread) 'terminate))
+                
 
               (define (rebuild!)
                 (channel-put rebuild-channel 'go))
@@ -403,8 +426,14 @@
                 (namespace-set-variable-value! 'shutdown! shutdown!)
                 (namespace-set-variable-value! 'rebuild! rebuild!)
                 (namespace-set-variable-value! 'exit shutdown!)
-                (let loop () (read-eval-print-loop) (loop)))))))
-
+                (let loop () 
+                  (read-eval-print-loop)
+                  (cond[(in-tmux?)
+                        (displayln "ETATCH")
+                        (system "tmux detach")]
+                       [else (displayln "")])
+                  (loop)))))))
+  
     (displayln "Running")
     (capture-signal! 'SIGTERM)
     (with-handlers ([exn:break?
@@ -413,3 +442,7 @@
                        (rackmud-shutdown!))])
       (sync shutdown-semaphore next-signal-evt)
       (rackmud-shutdown!))))
+
+#|(when pre-readline-input-port
+  (close-input-port (current-input-port))
+  (current-input-port pre-readline-input-port))|#
