@@ -1,7 +1,8 @@
 #lang racket/base
 
-(require net/jwt net/base64 racket/random "db.rkt")
-(provide jwt-secret jwt-duration jwt-domain jwt-audience make-auth-jwt verify-auth-jwt refresh-jwt)
+(require net/jwt net/base64 racket/random "db.rkt" gregor)
+(provide jwt-secret jwt-duration jwt-domain jwt-audience make-auth-jwt verify-auth-jwt auth-jwt-exp
+         refresh-jwt)
 
 (define jwt-secret (make-parameter #f (λ (v) (unless (string? v) 
                                                 (raise-argument-error 'jwt-secret "string?" v))
@@ -34,11 +35,24 @@
 (define (verify-auth-jwt jwt)
   (unless (string? (jwt-secret))
     (raise-arguments-error 'verify-auth-jwt "jwt key not set" "(jwt-secret)" (jwt-secret)))
-  (let ([verified-jwt (decode/verify jwt "HS384" (jwt-secret)
-                                     #:iss (jwt-domain)
-                                     #:aud (jwt-domain))])
+  (let ([verified-jwt (and (database-check-jwt jwt)
+                           (decode/verify jwt "HS384" (jwt-secret)
+                                          #:iss (jwt-domain)
+                                          #:aud (jwt-domain)))])
       (and verified-jwt (claims-ref verified-jwt 'user-id))))
                   
+
+;; auth-jwt-exp: Str -> (or DateTime #f)
+
+(define (auth-jwt-exp jwt)
+  (unless (string? (jwt-secret))
+    (raise-arguments-error 'verify-auth-jwt "jwt key not set" "(jwt-secret)" (jwt-secret)))
+  (let ([verified-jwt (and (database-check-jwt jwt)
+                           (decode/verify jwt "HS384" (jwt-secret)
+                                          #:iss (jwt-domain)
+                                          #:aud (jwt-domain)))])
+      (and verified-jwt (posix->datetime (expiration-date verified-jwt)))))
+  
 
 ;; refresh-jwt: (or #f Str) -> (or #f (values OID Nat JWT-Str Token-Str))
 

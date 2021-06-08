@@ -1,12 +1,15 @@
 #lang racket/base
 
-(require db racket/format gregor racket/match racket/list racket/set "lib-path.rkt" racket/rerequire uuid racket/string sha)
+(require db racket/format gregor gregor/period
+         racket/match racket/list racket/set "lib-path.rkt" racket/rerequire uuid racket/string sha
+         )
 
 (provide make-rackmud-db-connection make-rackmud-db-pool rackmud-db-version database-log
          database-save-object database-new-object database-get-object database-get-singleton database-make-singleton
          database-connected? database-disconnect database-get-cid! load-class file->cids set-database-connection!
          database-make-token database-token-refresh database-get-all-tokens database-expire-token database-expire-all-tokens
          database-create-field-index database-get-field-index-ids database-prune-tokens parse-sig-token
+         database-check-jwt database-prune-jwt-revokation database-revoke-jwt
 
          field-search-array field-search-array/and field-search-array/or
          field-search-op
@@ -58,9 +61,7 @@
                  (->minutes g)
                  (->seconds g)
                  (->nanoseconds g)
-                 (->utc-offset g)))
-
-
+                 (if (moment-provider? g) (->utc-offset g) 0)))
   
 (define object-load-stmt
   (virtual-statement
@@ -120,7 +121,7 @@
 
 (define new-token-stmt
   (virtual-statement
-   "INSERT INTO auth (oid, expires, sig, session) values ($1, (now() + $2 * interval '1 second'), $3, $4) RETURNING seq"))
+   "INSERT INTO auth (oid, expires, sig, session, jwt) values ($1, (now() + $2 * interval '1 second'), $3, $4) RETURNING seq"))
 
 (define get-id-for-token-stmt
   (virtual-statement
@@ -141,6 +142,18 @@
   (virtual-statement
    "DELETE FROM auth WHERE oid = $1"))
 
+(define check-jwt-revokation
+  (virtual-statement
+   "SELECT * from jwt_revoke WHERE jwt = $1"))
+
+(define prune-jwt-revokation
+  (virtual-statement
+   "DELETE FROM jwt_revoke WHERE expires <= now()"))
+
+(define revoke-jwt
+  (virtual-statement
+   "INSERT INTO jwt_revoke (jwt, expires) values ($1, $2)"))
+
 (define module-to-cid-query
   (virtual-statement
    "SELECT cid from classes where module = $1"))
@@ -148,15 +161,29 @@
 (define (database-connected?)
   (connection? _dbc_))
 
+(define jwt-prune-thread #f)
+
 (define (database-disconnect)
   (when (connection? _dbc_)
     (disconnect _dbc_)
+    (when (thread? jwt-prune-thread)
+      (kill-thread jwt-prune-thread)
+      (set! jwt-prune-thread #f))
     (set! _dbc_ #f)))
 
 
 (define (set-database-connection! pool)
   (unless (connection? pool) (raise-argument-error 'set-database-connection! "connection?" pool))
   (when _dbc_ (disconnect _dbc_))
+  (when (thread? jwt-prune-thread)
+    (kill-thread jwt-prune-thread))
+  (set! jwt-prune-thread
+        (thread
+         (λ ()
+           (let loop ()
+             (sleep 600)
+             (database-prune-jwt-revokation)
+             (loop)))))
   (set! _dbc_ pool))
 
 
@@ -454,7 +481,7 @@ database-get-cid! : Symbol Path -> Nat
          [seq (query-value _dbc_ new-token-stmt oid (false->sql-null duration) sig/hash session)])
     (string-append seq "&" sig)))
   
-;; parse-sig-token: Str -> (or #f UUID) (or #f UUID)
+;; parse-sig-token: (or #f Str) -> (or #f UUID) (or #f UUID)
 
 (define (parse-sig-token maybe-token)
   (if maybe-token
@@ -474,14 +501,14 @@ database-get-cid! : Symbol Path -> Nat
    (λ ()
      (let-values ([(seq sig) (parse-sig-token old-token)])
        (let* ([token-info (and seq (query-maybe-row _dbc_ get-id-for-token-stmt seq (sha384 (string->bytes/utf-8 sig))))]
-           [id (and token-info (vector-ref token-info 0))]
-           [expired? (and token-info (vector-ref token-info 1))])
-      (when token-info (query-exec _dbc_ expire-token-stmt id seq))
-      (if (and id (not expired?))
-          (values id
-                  (sql-null->false (vector-ref token-info 2))
-                  (database-make-token id (sql-null->false (vector-ref token-info 2))))
-          (values id #f #f)))))))
+              [id (and (vector? token-info) (vector-ref token-info 0))]
+              [expired? (and (vector? token-info) (vector-ref token-info 1))])
+         (when token-info (query-exec _dbc_ expire-token-stmt id seq))
+         (if (and id (not expired?))
+             (values id
+                     (sql-null->false (vector-ref token-info 2))
+                     (database-make-token id (sql-null->false (vector-ref token-info 2))))
+             (values id #f #f)))))))
 
 
 (define (database-prune-tokens)
@@ -501,3 +528,21 @@ database-get-cid! : Symbol Path -> Nat
 
 (define (database-make-singleton oid cid)
   (query-exec _dbc_ new-singleton-stmt oid cid))
+
+;; (database-check-jwt jwt-string) returns true if jwt-string has not been revoked, false if it has
+
+(define (database-check-jwt jwt-string)
+  (not (query-maybe-row _dbc_ check-jwt-revokation)))
+
+;; (database-prune-jwt-revokation) deletes all jwt revoke records for expired jwts
+;;  (if they're expired they're rejected so the revoke is a waste of space and time)
+
+(define (database-prune-jwt-revokation)
+  (query-exec _dbc_ prune-jwt-revokation))
+
+;; (database-revoke-jwt jwt-string expiration) revokes jwt-string, with the revocation lasting until
+;;   the expiration.  (expiration should be >= the jwt's actual exparation)
+
+(define (database-revoke-jwt jwt-string expiration)
+  (when expiration
+    (query-exec _dbc_ revoke-jwt jwt-string (moment->sql expiration))))

@@ -20,7 +20,8 @@
          object-method-arity-includes?/rackmud field-names/rackmud object-info/rackmud dynamic-send/rackmud
          send/keyword-apply/rackmud send/apply/rackmud dynamic-get-field/rackmud dynamic-set-field!/rackmud field-bound?/rackmud
          class-field-accessor/rackmud class-field-mutator/rackmud this/rackmud
-         get-authorization make-authorization get-all-auth-tokens expire-auth-token expire-all-auth-tokens)
+         get-authorization make-authorization get-all-auth-tokens expire-auth-token expire-all-auth-tokens
+         expire-auth-token-and-jwt)
 
 
 (define class-dep-sema (make-semaphore 1))
@@ -1205,6 +1206,9 @@
 (define (expire-auth-token obj seq)
   (database-expire-token (if (lazy-ref? obj) (lazy-ref-id obj) obj) seq))
 
+(define (expire-auth-token-and-jwt obj seq jwt)
+  (database-expire-token (if (lazy-ref? obj) (lazy-ref-id obj) obj) seq)
+  (database-revoke-jwt jwt (auth-jwt-exp jwt) ))
 
 (define (expire-all-auth-tokens obj)
   (database-expire-all-tokens (lazy-ref-id obj)))

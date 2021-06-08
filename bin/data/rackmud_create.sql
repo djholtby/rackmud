@@ -113,10 +113,16 @@ CREATE TABLE auth (
 CREATE INDEX ON auth USING btree(oid);
 CREATE INDEX ON auth USING btree(expires) WHERE expires IS NOT NULL;
 
+CREATE TABLE jwt_revoke (
+   jwt TEXT NOT NULL,
+   expires TIMESTAMPTZ,
+   PRIMARY KEY(jwt)
+);
+
 CREATE TABLE metadata (
   id TEXT NOT NULL UNIQUE,
   val JSONB NOT NULL,
   PRIMARY KEY(id)
 );
 
-INSERT INTO metadata VALUES ('database-version', '2'::jsonb);
+INSERT INTO metadata VALUES ('database-version', '3'::jsonb);

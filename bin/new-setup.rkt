@@ -307,7 +307,9 @@
         (define websock-client-url (hash-ref cfg 'webserver:websock-client-url #f))
         (unless (and (path-string? www-path)
                      (directory-exists? www-path))
-          (hash-set! error-table 'webserver:www-path (if (path-string? www-path) "Not Found" "Invalid"))
+          (hash-set! error-table 'webserver:www-path (if (path-string? www-path)
+                                                         "Not Found"
+                                                         "Invalid"))
           (displayln "* WWW root is not valid" out))
         (unless (path-string? servlet-url)
           (displayln "* Servlet URL is not valid" out)
@@ -342,11 +344,13 @@
               [else (error 'config-option "Bad hint for ~a (~a)" name hint)]))
       (hash-set! action-map int name)
       (define line (format "~a) ~a = ~a" (padl (number->string int) 2)
-                           (pad (if (or (empty? split) (empty? (rest split))) (symbol->string name) (second split)) 20)
+                           (pad (if (or (empty? split) (empty? (rest split)))
+                                    (symbol->string name) (second split)) 20)
                            (~~ v)))
       (display line out)
       (cond [(string=? "" hint-text) (display "\n" out)]
-            [(< (+ (string-length line) (string-length hint-text)) terminal-width) ; not an off by 1, min 1 space before hint
+            [(< (+ (string-length line) (string-length hint-text)) terminal-width)
+             ;; not an off by 1:  min 1 space before hint
              (displayln (padl (format "~a" hint-text) (- terminal-width (string-length line))) out)]
             [else 
              (display "\n                           ^" out)
@@ -428,7 +432,9 @@
           [else 'start])]]
       [confirm-settings
        [(transmit (config->string)
-                  (format "\nEnter a setting to change, or press [Enter] to write your settings to '~a'\n" (hash-ref cfg 'filename))) #f]
+                  (format (string-append "\nEnter a setting to change, or press [Enter]"
+                                         " to write your settings to '~a'\n")
+                          (hash-ref cfg 'filename))) #f]
        [(let* ([selection (string->number (string-trim msg))]
                [change-settings (hash-ref action-map selection #f)])
           (cond [change-settings change-settings]
@@ -436,13 +442,15 @@
                       (string=? issues ""))
                  'validate]
                 [(string=? (string-trim msg) "")
-                 (transmit "Cannot save configuration due to the following issue(s)\n\n\e[31;1m" issues "\e[0m")
+                 (transmit "Cannot save configuration due to the following issue(s)\n\n\e[31;1m"
+                           issues "\e[0m")
                  #f]
                 [else (transmit "Invalid Selection") #f]))]]
       [validate
        [(define db-version (verify-db-settings cfg))
         (case db-version
-          [(#f) (transmit "\e[31;1mdatabase connection failure, please confirm your database configuration\e[0m\n") 'confirm-settings]
+          [(#f) (transmit "\e[31;1mdatabase connection failure, please confirm"
+                          " your database configuration\e[0m\n") 'confirm-settings]
           [(no-schema) 'configure-database]
           [else (set! database-version db-version) 'upgrade-db])]
        [(error 'validate "not implemented")]]
@@ -450,8 +458,10 @@
        [(transmit (format "Connected to database (version=~a)\n" database-version)) 'confirm-mudlib]
        [(error 'upgrade-db "not implemented")]] ; TODO - upgrade scripts 
       [configure-database
-       [(transmit "Connected to database, but no rackmud schema was found.  Create tables now? (Y / N)\n"
-                  "Note: rackmud requires uuid-ossp.  A postgres superuser must install this module first.\n") #f]
+       [(transmit "Connected to database, but no rackmud schema was found."
+                  "  Create tables now? (Y / N)\n"
+                  "Note: rackmud requires uuid-ossp."
+                  "  A postgres superuser must install this module first.\n") #f]
        [(match (string-foldcase msg)
           [(pregexp #px"^\\s*y(a|eah|es)?\\s*$") (load-db-schema cfg) 'confirm-mudlib]
           [(pregexp #px"^\\s*(n(o|ah|ope)?)?\\s*$") 'save-verification]
@@ -492,22 +502,26 @@
         (cond [(string=? tmsg "") (hash-set! cfg 'database:password #f) 'confirm-settings]
               [else (hash-set! cfg 'database:password tmsg) 'confirm-settings])]]
       [database:server
-       [(transmit "Enter the TCP address of the database server.  Use #f if using a system socket (or to use localhost)\n") #f]
+       [(transmit "Enter the TCP address of the database server.  "
+                  "Use #f if using a system socket (or to use localhost)\n") #f]
        [
         (define tmsg (string-trim msg))
         (cond [(string=? tmsg "") 'confirm-settings]
               [(string=? tmsg "#f") (hash-set! cfg 'database:server #f) 'confirm-settings]
               [else (hash-set! cfg 'database:server tmsg) 'confirm-settings])]]
       [database:port
-       [(transmit "Enter the TCP port of the database server.  Use #f if using a system socket (or to use the default port)\n") #f]
+       [(transmit "Enter the TCP port of the database server.  "
+                  "Use #f if using a system socket (or to use the default port)\n") #f]
        [
         (define tmsg (string-trim msg))
         (cond [(string=? tmsg "") 'confirm-settings]
               [(string=? tmsg "#f") (hash-set! cfg 'database:port #f) 'confirm-settings]
-              [(port-number? (string->number tmsg)) (hash-set! cfg 'database:port (string->number tmsg)) 'confirm-settings]
+              [(port-number? (string->number tmsg))
+               (hash-set! cfg 'database:port (string->number tmsg)) 'confirm-settings]
               [else (transmit "Enter a valid port number, or #f\n") #f])]]
       [database:socket
-       [(transmit "Enter system socket for postgres connection, 'guess to attempt to guess the socket, or #f if not using a system socket\n")]
+       [(transmit "Enter system socket for postgres connection, 'guess to attempt to guess the "
+                  "socket, or #f if not using a system socket\n")]
        [
         (define tmsg (string-trim msg))
         (cond [(string=? tmsg "") 'confirm-settings]
@@ -517,7 +531,8 @@
               [(path-string? tmsg) (hash-set! cfg 'database:socket tmsg) 'confirm-settings]
               [else (transmit "Enter a valid socket path, 'guess, or #f\n")])]]
       [mudlib-collect
-       [(transmit "Enter the collection name for the mudlib\n\e[33m[The default is \"mudlib\" and that's not a bad choice]\e[0m\n") #f]
+       [(transmit "Enter the collection name for the mudlib\n\e[33m[The default is \"mudlib\" "
+                  "and that's not a bad choice]\e[0m\n") #f]
        [
         (define tmsg (string-trim msg))
         (define old (hash-ref cfg 'mudlib-collect #f))
@@ -526,7 +541,8 @@
               [(path-string? tmsg) (hash-set! cfg 'mudlib-collect tmsg) 'confirm-settings]
               [else (transmit "invalid module path\n") #f])]]
       [master-module
-       [(transmit "Enter the module that defines the master object class\n\e[33m[This must be a module path relative to the mudlib collect]\e[0m\n") #f]
+       [(transmit "Enter the module that defines the master object class\n\e[33m[This must be a "
+                  "module path relative to the mudlib collect]\e[0m\n") #f]
        [
         (define tmsg (string-trim msg))
         (define old (hash-ref cfg 'master-module #f))
@@ -535,7 +551,8 @@
               [(path-string? tmsg) (hash-set! cfg 'master-module tmsg) 'confirm-settings]
               [else (transmit "invalid module path\n") #f])]]
       [master-classname
-       [(transmit "Enter the master object's class name\n\e[33m[This must be provided by the module specified by master-module]\e[0m\n") #f]
+       [(transmit "Enter the master object's class name\n\e[33m[This must be provided by the "
+                  "module specified by master-module]\e[0m\n") #f]
        [
         (define tmsg (string-trim msg))
         (define old (hash-ref cfg 'master-classname #f))
@@ -598,32 +615,40 @@
                     (when (eq? undefined (string->mib e))
                       (transmit "\t\e[33;1m[INVALID]\e[0m"))
                     (transmit "\n")) enc)
-        (transmit "Commands\n\t[Enter] - return to main settings menu\n\tr <num> remove entry number <num>\n\ta <num> <encoding> add <encoding> before item <num>\n")
+        (transmit "Commands\n\t[Enter] - return to main settings menu\n\tr <num> remove entry "
+                  "number <num>\n\ta <num> <encoding> add <encoding> before item <num>\n")
         #f]
        [
         (define enc (hash-ref cfg 'telnet:encodings '()))
         (define cmd (string-split (string-foldcase msg)))
         (match cmd
           ['() 'confirm-settings]
-          [(list "r" ns) (let [(n (string->number ns))]
-                           (cond [(not (exact-positive-integer? n)) (transmit "invalid position\n") #f]
-                                 [(> n (length enc)) (transmit "invalid position\n") #f]
-                                 [else (hash-set! cfg 'telnet:encodings (remv (list-ref enc (sub1 n)) enc)) 'telnet:encodings]))]
-          [(list "a" ns estr) (let [(n (string->number ns))]
-                                (cond [(not (exact-positive-integer? n)) (transmit "invalid position\n") #f]
-                                      [(> n (add1 (length enc))) (transmit "invalid position\n") #f]
-                                      [(not (number? (string->mib estr))) (transmit "unknown encoding\n") #f]
-                                      [else (hash-set! cfg 'telnet:encodings (insert-at enc (sub1 n) (string-upcase estr))) 'telnet:encodings]))]
+          [(list "r" ns)
+           (let [(n (string->number ns))]
+             (cond [(not (exact-positive-integer? n)) (transmit "invalid position\n") #f]
+                   [(> n (length enc)) (transmit "invalid position\n") #f]
+                   [else (hash-set! cfg 'telnet:encodings
+                                    (remv (list-ref enc (sub1 n)) enc)) 'telnet:encodings]))]
+          [(list "a" ns estr)
+           (let [(n (string->number ns))]
+             (cond [(not (exact-positive-integer? n)) (transmit "invalid position\n") #f]
+                   [(> n (add1 (length enc))) (transmit "invalid position\n") #f]
+                   [(not (number? (string->mib estr))) (transmit "unknown encoding\n") #f]
+                   [else (hash-set! cfg 'telnet:encodings (insert-at enc (sub1 n)
+                                                                     (string-upcase estr)))
+                         'telnet:encodings]))]
           [else (transmit "unknown command\n") #f])]]
       [interactive
-       [(transmit "Enter #t to start the server in interactive mode, #f to disable interactive mode\n") #f]
+       [(transmit "Enter #t to start the server in interactive mode, "
+                  "#f to disable interactive mode\n") #f]
        [
         (define tmsg (string-trim msg))
         (cond [(string=? tmsg "") 'confirm-settings]
               [(string=? tmsg "#f") (hash-set! cfg 'interactive #f) 'confirm-settings]
               [else (hash-set! cfg 'interactive #t)])]]
       [thread-count
-       [(transmit "Enter the number of event handler threads (these handle internal events, network connections each get their own threads)\n") #f]
+       [(transmit "Enter the number of event handler threads (these handle internal events, "
+                  "network connections each get their own threads)\n") #f]
        [
         (define tmsg (string-trim msg))
         (define n (string->number tmsg))
@@ -656,28 +681,33 @@
               [(not (path-string? tmsg)) (transmit "invalid path\n") #f]
               [(not (directory-exists? tmsg)) (transmit "directory not found\n") #f]
               [else (hash-set! cfg 'webserver:www-path
-                               (path->string (simplify-path (path->complete-path tmsg)))) 'confirm-settings])]]
+                               (path->string (simplify-path (path->complete-path tmsg))))
+                    'confirm-settings])]]
       [webserver:servlet-url
        [(transmit "Enter the URL prefix for servlet pages\n") #f]
        [
         (define tmsg (string-trim msg))
         (cond [(string=? tmsg "") 'confirm-settings]
-              [(and (path-string? tmsg) (relative-path? tmsg)) (hash-set! cfg 'webserver:servlet-url tmsg) 'confirm-settings]
+              [(and (path-string? tmsg) (relative-path? tmsg))
+               (hash-set! cfg 'webserver:servlet-url tmsg) 'confirm-settings]
               [else (transmit "invalid URL prefix\n") #f])]]
       [webserver:websock-url
        [(transmit "Enter the URL prefix for websocket connections\n") #f]
        [
         (define tmsg (string-trim msg))
         (cond [(string=? tmsg "") 'confirm-settings]
-              [(and (path-string? tmsg) (relative-path? tmsg)) (hash-set! cfg 'webserver:websock-url tmsg) 'confirm-settings]
+              [(and (path-string? tmsg) (relative-path? tmsg))
+               (hash-set! cfg 'webserver:websock-url tmsg) 'confirm-settings]
               [else (transmit "invalid URL prefix\n") #f])]]   
       [webserver:websock-client-url
-       [(transmit "Enter the URL suffix for the built-in websocket client\n"
-                  "\e[33m[the complete URL will be the websocket URL followed by this suffix]\e[0m\n") #f]
+       [(transmit "Enter the URL suffix for the built-in websocket client\n\e[33m["
+                  "the complete URL will be the websocket URL followed by this suffix]\e[0m\n")
+        #f]
        [
         (define tmsg (string-trim msg))
         (cond [(string=? tmsg "") 'confirm-settings]
-              [(and (path-string? tmsg) (relative-path? tmsg)) (hash-set! cfg 'webserver:websock-client-url tmsg) 'confirm-settings]
+              [(and (path-string? tmsg) (relative-path? tmsg))
+               (hash-set! cfg 'webserver:websock-client-url tmsg) 'confirm-settings]
               [else (transmit "invalid URL prefix\n") #f])]]
       [filename
        [(transmit "Enter the name of the configuration file\n"
@@ -696,12 +726,12 @@
                (transmit "bad file name\n") #f]
               [else
                (unless (string=? default-config-name filename)
-                 (transmit "This is not the default file name.  You'll need to use a flag each time you launch the server!\n"))
+                 (transmit "This is not the default file name.  "
+                           "You'll need to use a flag each time you launch the server!\n"))
                (hash-set! cfg 'filename tmsg)
                'confirm-settings])]])))
 
 (define (rackmud-configure current-config #:start [start 'start] #:in [in (current-input-port)])
-
   (define new-config (hash-copy current-config))
   (define new-menu
     (new new-install-menu%
@@ -709,9 +739,8 @@
          [initial-state start]
          [enter-on-create? #t]
          [in in]))
-  (send new-menu input-loop)
-  (and (eq? #t (send new-menu get-return-status)) new-config))
-;(if (eq? #t return-status) new-config #f))
+  (and (eq? #t (send new-menu input-loop)) new-config))
+
 
 
 (module+ main

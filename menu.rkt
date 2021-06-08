@@ -5,7 +5,7 @@
          telnet/connection racket/match no-echo)
 
 
-(provide menu% terminal-menu% menu+connection% define-menu-fsm)
+(provide menu% terminal-menu% menu+connection% define-menu-fsm has-setup-menu<%>)
 
 #|(define-syntax-parameter set-state!/param (syntax-rules ()))
 (define-syntax-parameter transmit/param (syntax-rules ()))
@@ -28,7 +28,8 @@
   (class* temp-object% (conn<%>)
     (super-new)
     (init [initial-state #f]
-          [enter-on-create? #f])
+          [enter-on-create? #f]
+          [enter-epsilon? #f])
    
     (define state initial-state)
     
@@ -54,7 +55,10 @@
         (when (and allow-epsilon? (symbol? epsilon-state))
           (set-state! epsilon-state #:allow-epsilon? #t))))
 
-    (when enter-on-create? (enter))))
+    (when enter-on-create?
+      (define enter-result (enter))
+      (when (and enter-epsilon? (symbol? enter-result))
+        (set-state! enter-result)))))
 
 (define terminal-menu%
   (class menu%
@@ -86,8 +90,7 @@
           [(? string?) (display message out-port)]
           [(? number?) (display message out-port)]
           [(? eof-object?) (set! return-status #f) (set! conn? #f)]
-          [(? boolean?) (set! return-status message) (set! conn? #f)])))
-
+          [else (set! return-status message) (set! conn? #f)])))
     
     (define/public (input-loop)
       (let loop ()
@@ -97,22 +100,17 @@
                           (read-line/password #:in in-port #:out out-port #:stars? use-stars?))])
             (unless (eof-object? line)
               (send this receive line)
-              (loop))))))))
+              (loop)))))
+      return-status)))
     
-    
-    
-
-
 (define has-setup-menu<%>
   (interface (master<%>)
     [setup-complete? (->m any/c)]
-    [get-setup-menu (->*m (output-port?) () #:rest (listof any/c) (is-a?/c menu%))]))
-
+    [run-setup-menu! (->m input-port? output-port? any/c)]))
 
 (define menu+connection%
   (class* menu% (inner-connection<%>)
     (define outer-connection #f)
-    
 
     (define/override (transmit . messages)
       (void (when outer-connection
@@ -130,7 +128,6 @@
           (if delay
               (queue-event delay (send this enter))
               (send this enter))))
-    
     (super-new)))
 
 (define-syntax (define-menu-fsm stx)
