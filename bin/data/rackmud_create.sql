@@ -119,6 +119,8 @@ CREATE TABLE jwt_revoke (
    PRIMARY KEY(jwt)
 );
 
+CREATE INDEX ON jwt_revoke using btree(expires);
+
 CREATE TABLE metadata (
   id TEXT NOT NULL UNIQUE,
   val JSONB NOT NULL,

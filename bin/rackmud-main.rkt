@@ -389,6 +389,20 @@
            (sync rebuild-channel)
            (rackmud-rebuild!)
            (loop)))))
+
+    (define jwt-prune-thread
+      (thread
+       (letrec
+           ([loop
+            (λ ()
+              (database-prune-jwt-revokation)
+              (sleep (jwt-duration))
+              (loop))])
+         loop)))
+           
+                      
+
+
     (define shutdown-semaphore (make-semaphore 0))
     (define (rackmud-shutdown!)
       (displayln "Shutting down...")
@@ -397,14 +411,17 @@
       (when telnet-serv (tcp-close telnet-serv))
       (when ssl-thread (kill-thread ssl-thread))
       (when ssl-serv (tcp-close ssl-serv))
+      (when jwt-prune-thread (kill-thread jwt-prune-thread))
       (when repl-thread
         (break-thread repl-thread 'terminate))
       (kill-thread rebuild-thread)
       (displayln "Telnet and REPL stopped...")
       (shut-down!))     
-   
-    ;; Finally, if running in interactive mode, start the REPL thread
+
+
     
+    ;; Finally, if running in interactive mode, start the REPL thread
+
     (define repl-thread
       (and (hash-ref cfg 'interactive #f)
            (thread

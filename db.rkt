@@ -121,7 +121,7 @@
 
 (define new-token-stmt
   (virtual-statement
-   "INSERT INTO auth (oid, expires, sig, session, jwt) values ($1, (now() + $2 * interval '1 second'), $3, $4) RETURNING seq"))
+   "INSERT INTO auth (oid, expires, sig, session) values ($1, (now() + $2 * interval '1 second'), $3, $4) RETURNING seq"))
 
 (define get-id-for-token-stmt
   (virtual-statement
@@ -532,7 +532,7 @@ database-get-cid! : Symbol Path -> Nat
 ;; (database-check-jwt jwt-string) returns true if jwt-string has not been revoked, false if it has
 
 (define (database-check-jwt jwt-string)
-  (not (query-maybe-row _dbc_ check-jwt-revokation)))
+  (not (query-maybe-row _dbc_ check-jwt-revokation jwt-string)))
 
 ;; (database-prune-jwt-revokation) deletes all jwt revoke records for expired jwts
 ;;  (if they're expired they're rejected so the revoke is a waste of space and time)
