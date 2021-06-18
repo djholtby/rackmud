@@ -101,7 +101,7 @@ The connection manager will send a telnet-object to it whenever a user connects.
                                                  (format "^~a$|^~a/" quoted-url quoted-url)))
                       #:websocket-path websock-url
                       #:websocket-regexp (regexp (let ([quoted-url (root-url-quote websock-url)])
-                                                 (format "^~a$|^~a/" quoted-url quoted-url))))]
+                                                   (format "^~a$|^~a/" quoted-url quoted-url))))]
          [bound-ports (if socket-path
                           (list (async-channel-get confirmation-channel) #f)
                           (if
@@ -137,14 +137,36 @@ The connection manager will send a telnet-object to it whenever a user connects.
   (send/rackmud master-object on-shutdown)
   (displayln "Shut down master object")
   (set! master-object 'shutting-down)
+  (log-message (current-logger)
+               'info
+               'rackmud
+               "Master object shutdown method completed"
+               #f)
   (scheduler-stop! scheduler)
   (displayln "Stopped scheduler")
   (when webserver
-    (webserver-stop))
-  (displayln "Stopped webserver")
+    (webserver-stop)
+    (displayln "Stopped webserver")
+    (log-message (current-logger)
+                 'info
+                 'rackmud
+                 "Webserver stopped"
+               #f))
   (for-each kill-thread thread-pool)
   (set! thread-pool #f)
+  (displayln "Killed thread pool")
+  (log-message (current-logger)
+               'info
+               'rackmud
+               "Thread pool terminated"
+               #f)
   (save-all-objects)
   (displayln "Saved cached objects")
+  (log-message (current-logger)
+               'info
+               'rackmud
+               "Saved cached objects successfully"
+               #f)
+  
   (database-disconnect)
   (displayln "Closed database connection"))

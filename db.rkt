@@ -5,12 +5,18 @@
          )
 
 (provide make-rackmud-db-connection make-rackmud-db-pool rackmud-db-version database-log
-         database-save-object database-new-object database-get-object database-get-singleton database-make-singleton
-         database-connected? database-disconnect database-get-cid! load-class file->cids set-database-connection!
-         database-make-token database-token-refresh database-get-all-tokens database-expire-token database-expire-all-tokens
-         database-create-field-index database-get-field-index-ids database-prune-tokens parse-sig-token
-         database-check-jwt database-prune-jwt-revokation database-revoke-jwt
+         database-save-object database-new-object database-get-object database-get-singleton
+         database-make-singleton
+         database-connected? database-disconnect database-get-cid! load-class file->cids
+         set-database-connection!
+         database-make-token database-token-refresh database-get-all-tokens database-expire-token
+         database-expire-all-tokens
+         database-create-field-index database-get-field-index-ids database-prune-tokens
+         parse-sig-token
+         database-check-jwt database-prune-jwt-revokation database-revoke-jwt database-get-logs
 
+         log-level->int int->log-level
+         
          field-search-array field-search-array/and field-search-array/or
          field-search-op
          field-search-table/key+value
@@ -20,8 +26,9 @@
          )
 
 (define (make-rackmud-db-pool db-port db-sock db-srv db-db db-user db-pass)
-  (virtual-connection (connection-pool
-                       (λ () (make-rackmud-db-connection db-port db-sock db-srv db-db db-user db-pass)))))
+  (virtual-connection
+   (connection-pool
+    (λ () (make-rackmud-db-connection db-port db-sock db-srv db-db db-user db-pass)))))
 
 (define (make-rackmud-db-connection db-port db-sock db-srv db-db db-user db-pass)
   (cond [(and db-sock (not db-srv) (not db-port))
@@ -38,7 +45,8 @@
           #:port (if db-port db-port 5432)
           #:password db-pass)]
         [else (raise-arguments-error 'database-setup
-                                     "cannot use both TCP and local socket!" "db-sock" db-sock "db-srv" db-srv "db-port" db-port)]))
+                                     "cannot use both TCP and local socket!" "db-sock"
+                                     db-sock "db-srv" db-srv "db-port" db-port)]))
 
 (define (rackmud-db-version conn)
   (with-handlers ([exn:fail:sql? (lambda (e) #f)])
@@ -119,13 +127,50 @@
   (virtual-statement
    "INSERT INTO logfile (level, module, description, backtrace) values ($1, $2, $3, $4)"))
 
+
+(define log-query/range
+  (virtual-statement
+   (string-append
+    "SELECT * FROM logfile WHERE (level BETWEEN $1 AND $2) AND "
+    "(($3::text[] IS NULL) OR (module = ANY($3::text[]))) AND "
+    "(($4::text IS NULL) OR (description @@ $4::text)) "
+    "ORDER BY time DESC LIMIT $5 OFFSET $6")))
+
+(define log-query/asc/range
+  (virtual-statement
+   (string-append
+    "SELECT * FROM logfile WHERE (level BETWEEN $1 AND $2) AND "
+    "(($3::text[] IS NULL) OR (module = ANY($3::text[]))) AND "
+    "(($4::text IS NULL) OR (description @@ $4::text)) "
+    "ORDER BY time ASC LIMIT $5 OFFSET $6")))
+
+
+(define log-query
+  (virtual-statement
+   (string-append
+    "SELECT * FROM logfile WHERE (level BETWEEN $1 AND $2) AND "
+    "(($3::text[] IS NULL) OR (module = ANY($3::text[]))) AND "
+    "(($4::text IS NULL) OR (description @@ $4::text)) "
+    "ORDER BY time DESC")))
+
+(define log-query/asc
+  (virtual-statement
+   (string-append
+    "SELECT * FROM logfile WHERE (level BETWEEN $1 AND $2) AND "
+    "(($3::text[] IS NULL) OR (module = ANY($3::text[]))) AND "
+    "(($4::text IS NULL) OR (description @@ $4::text)) "
+    "ORDER BY time ASC")))
+
 (define new-token-stmt
   (virtual-statement
-   "INSERT INTO auth (oid, expires, sig, session) values ($1, (now() + $2 * interval '1 second'), $3, $4) RETURNING seq"))
+   (string-append
+    "INSERT INTO auth (oid, expires, sig, session) values "
+    "($1, (now() + $2 * interval '1 second'), $3, $4) RETURNING seq")))
 
 (define get-id-for-token-stmt
   (virtual-statement
-   (string-append "SELECT oid,((expires IS NOT NULL) and (expires <= now())) AS expired , EXTRACT(epoch FROM (expires - issued))::int AS duration "
+   (string-append "SELECT oid,((expires IS NOT NULL) and (expires <= now())) AS expired,"
+                  "EXTRACT(epoch FROM (expires - issued))::int AS duration "
                   "FROM auth WHERE seq = $1 AND sig = $2" )))
 
 (define tokens-for-oid-stmt
@@ -190,6 +235,9 @@
 (define (log-level->int ll)
   (or (index-of '(none fatal error warning info debug) ll eq?) 0))
 
+(define (int->log-level i)
+  (vector-ref '#(none fatal error warning info debug) i))
+
 #|
   (when (thread? logger-thread)
     (kill-thread logger-thread))
@@ -253,7 +301,8 @@ database-get-cid! : Symbol Path -> Nat
          [classname (string->symbol (vector-ref classinfo/v 0))]
          [classfile (string->path (vector-ref classinfo/v 1))]
          [classfile/resolved (build-path lib-path classfile)]
-         [changes (dynamic-rerequire classfile/resolved #:verbosity 'none)] ;; TODO: Mark changed mudlib source files
+         [changes (dynamic-rerequire classfile/resolved #:verbosity 'none)]
+         ;; TODO: Mark changed mudlib source files
          [% (dynamic-require classfile/resolved classname)])
     ;(mark-needed-reloads changes)
     %))
@@ -487,7 +536,7 @@ database-get-cid! : Symbol Path -> Nat
   (if maybe-token
       (let [(strings (string-split maybe-token "&"))]
         (if (and (cons? strings) (cons? (cdr strings)) (null? (cddr strings)) ; 2 element list
-                 (uuid-string? (car strings)) (uuid-string? (cadr strings)))  ; both elements are UUID strings
+                 (uuid-string? (car strings)) (uuid-string? (cadr strings)))  ; both are UUIDs
             (values (car strings) (cadr strings))
             (and (log-warning "received invalid refresh token value: ~a" maybe-token) (values #f #f))))
       (values #f #f)))       ; cookie was not found
@@ -500,7 +549,8 @@ database-get-cid! : Symbol Path -> Nat
    _dbc_
    (λ ()
      (let-values ([(seq sig) (parse-sig-token old-token)])
-       (let* ([token-info (and seq (query-maybe-row _dbc_ get-id-for-token-stmt seq (sha384 (string->bytes/utf-8 sig))))]
+       (let* ([token-info (and seq (query-maybe-row _dbc_ get-id-for-token-stmt seq
+                                                    (sha384 (string->bytes/utf-8 sig))))]
               [id (and (vector? token-info) (vector-ref token-info 0))]
               [expired? (and (vector? token-info) (vector-ref token-info 1))])
          (when token-info (query-exec _dbc_ expire-token-stmt id seq))
@@ -546,3 +596,23 @@ database-get-cid! : Symbol Path -> Nat
 (define (database-revoke-jwt jwt-string expiration)
   (when expiration
     (query-exec _dbc_ revoke-jwt jwt-string (moment->sql expiration))))
+
+(define (database-get-logs #:subjects [subjects #f]
+                           #:level-low [level-low 0] #:level-high [level-high 5]
+                           #:limit [limit #f] #:offset[offset #f] #:text-search [text-search #f]
+                           #:asc? [asc? #f])
+  (map (λ (row)
+         (match row
+           [(vector time level library message backtrace)
+            (vector (sql->moment time) (int->log-level level) library message
+                    (if (string? backtrace)
+                        (string-split backtrace "\n")
+                        null))]))
+       (if limit
+           (query-rows _dbc_ (if asc? log-query/asc/range log-query/range) level-low level-high
+                       (false->sql-null subjects)
+                       (false->sql-null text-search)
+                       limit offset)
+           (query-rows _dbc_ (if asc? log-query/asc log-query) level-low level-high
+                       (false->sql-null subjects)
+                       (false->sql-null text-search)))))

@@ -1,7 +1,7 @@
 #lang racket/base
 
 (define t0 (current-inexact-milliseconds))
-(require net/rfc6455 net/url web-server/http/request-structs
+(require net/rfc6455 net/url web-server/http/request-structs xml
          racket/tcp openssl telnet charset racket/place racket/runtime-path
          net/base64 racket/random unix-signals racket/system no-echo
          (except-in "../main.rkt" rackmud:domain rackmud:telnet-port rackmud:ssl-telnet-port
@@ -79,11 +79,10 @@
 (place-channel-put compiler-place mudlib-collect)
 (place-channel-put compiler-place (hash-ref cfg 'compile-mudlib-on-launch? #t))
 
-(define rackmud-logger (make-logger #f (current-logger) 'info #f))
-(define rackmud-log-rec
-  (make-log-receiver (current-logger) 'debug 'rackmud 'debug 'grapevine 'warning))
+(define rackmud-logger (make-logger #f (current-logger) 'warning #f))
 (current-logger rackmud-logger)
-
+(define rackmud-log-rec
+  (make-log-receiver (current-logger) 'debug 'rackmud 'info 'grapevine 'warning))
 
 (parameterize ([current-library-collection-paths
                 (if mudlib/path
@@ -92,7 +91,8 @@
                [current-logger rackmud-logger]
                [jwt-secret (get-jwt-secret)]
                [jwt-duration (hash-ref cfg 'jwt-duration 600)]
-               [jwt-domain (hash-ref cfg 'server-domain #f)])
+               [jwt-domain (hash-ref cfg 'server-domain #f)]
+               [current-unescaped-tags html-unescaped-tags])
 
 
   (define logger-thread
@@ -204,7 +204,7 @@
     (start-scheduler! (hash-ref cfg 'thread-count))  
     (display "Loading Master Object...")
     (set! t0 (current-inexact-milliseconds))
-  
+    (define t-master t0)
     (load-master-object! resolved-collect
                          (string->symbol (hash-ref cfg 'master-classname "custom-master%")))
 
@@ -360,6 +360,13 @@
 
     (printf "started in ~vms\n" (round (inexact->exact (- (current-inexact-milliseconds) t0))))
 
+    (log-message (current-logger)
+               'info
+               'rackmud
+               (format "Startup completed in ~vms"
+                       (round (inexact->exact (- (current-inexact-milliseconds) t-master))))
+               #f)
+    
     (if (rackmud:proxy-mode)
         (printf "Webserver running in proxy mode [~a].  Listening at ~a\n"
                 proxy-mode
@@ -406,14 +413,19 @@
     (define shutdown-semaphore (make-semaphore 0))
     (define (rackmud-shutdown!)
       (displayln "Shutting down...")
+      (log-message (current-logger)
+                 'info
+                 'rackmud
+                 "Shutdown sequence begun"
+                 #f)
       (when cert-thread (kill-thread cert-thread))
       (when telnet-thread (kill-thread telnet-thread))
       (when telnet-serv (tcp-close telnet-serv))
       (when ssl-thread (kill-thread ssl-thread))
       (when ssl-serv (tcp-close ssl-serv))
       (when jwt-prune-thread (kill-thread jwt-prune-thread))
-      (when repl-thread
-        (break-thread repl-thread 'terminate))
+      (when (and (thread? repl-thread) (thread-running? repl-thread))
+        (kill-thread repl-thread))
       (kill-thread rebuild-thread)
       (displayln "Telnet and REPL stopped...")
       (shut-down!))     
@@ -433,7 +445,8 @@
                                          (old-error-display-handler msg exn))))
               (define (shutdown! [code 0])
                 (semaphore-post shutdown-semaphore)
-                (break-thread (current-thread) 'terminate))
+                (kill-thread repl-thread))
+                ;(break-thread (current-thread) 'terminate))
                 
 
               (define (rebuild!)
@@ -459,7 +472,10 @@
                        (rackmud-shutdown!))])
       (sync shutdown-semaphore next-signal-evt)
       (rackmud-shutdown!))))
+(displayln "Goodbye")
+(flush-output (current-output-port))
+(flush-output (current-error-port))
 
-#|(when pre-readline-input-port
+(when pre-readline-input-port
   (close-input-port (current-input-port))
-  (current-input-port pre-readline-input-port))|#
+  (current-input-port pre-readline-input-port))

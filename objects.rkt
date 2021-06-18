@@ -21,7 +21,8 @@
          send/keyword-apply/rackmud send/apply/rackmud dynamic-get-field/rackmud dynamic-set-field!/rackmud field-bound?/rackmud
          class-field-accessor/rackmud class-field-mutator/rackmud this/rackmud
          get-authorization make-authorization get-all-auth-tokens expire-auth-token expire-all-auth-tokens
-         expire-auth-token-and-jwt)
+         expire-auth-token-and-jwt
+         get-rackmud-logs)
 
 
 (define class-dep-sema (make-semaphore 1))
@@ -931,8 +932,8 @@
                                                   #'(set! id (hash-ref vars 'id undefined))))
                                         unsaved-class-vars)]
                 [lookup-by-id (make-hasheq (map (λ (id-stx local-identifier)
-                                               (cons (syntax->datum id-stx) local-identifier))
-                                             saved-class-vars local-field-names))])
+                                                  (cons (syntax->datum id-stx) local-identifier))
+                                                saved-class-vars local-field-names))])
            (with-syntax ([(def-or-exp ... ) wrapped-def-or-exprs]
                          [(save-id ...) saved-class-vars]
                          [(var-save ...) save-list]
@@ -941,72 +942,72 @@
                          [(unsaved-load ...) load-unsaved-list]
                          [(local-name ...) local-field-names]
                          [(create-index ...)
-                       (for/list ([(id index-defn) (in-hash indexed-class-vars)])
+                          (for/list ([(id index-defn) (in-hash indexed-class-vars)])
                          
-                         (let ([local-id-stx (hash-ref lookup-by-id id
-                                                       (λ () (raise-syntax-error 'define-saved-mixin
-                                                                                 "unknown saved field" (cadr index-defn) (caar index-defn))))])
-                           (with-syntax ([id local-id-stx]
-                                         [type (datum->syntax (caar index-defn) (caddr index-defn))] 
-                                         [depth (datum->syntax (caar index-defn) (cdddr index-defn))])
-                             (syntax/loc (caar index-defn) (database-create-field-index id 'type depth)))))]
-                      [(define-index-search ...)
-                      (for/list ([(id index-defn) (in-hash indexed-class-vars)])
-                          (with-syntax ([id (hash-ref lookup-by-id id)] 
-                                        [index-name (format-id stx "find-~a-by-~a"
-                                                               (syntax-e #'name)
-                                                               (syntax-e (cdar index-defn))
-                                                               #:source (caar index-defn))]
-                                        [value-path (let loop ([depth (cdddr index-defn)] [acc '()])
-                                                      (if (= 0 depth) acc (loop (sub1 depth) (cons "value" acc))))])
-                            (quasisyntax/loc (caar index-defn)
-                              (splicing-let ([full-json-path (cons (symbol->string id) 'value-path)])
-                                (unsyntax
-                                 (case (caddr index-defn)
-                                   [(simple string number boolean symbol bytes)
-                                    (syntax/loc (caar index-defn)
-                                      (define (index-name value [operator '=])
-                                        (map id->lazy-ref
-                                             (field-search-op full-json-path operator (value->jsexpr value)))))]
-                                   [(symbol-table)
-                                    (syntax/loc (caar index-defn)
-                                      (define (index-name key [value #f] [mode 'has-key?])
-                                        (map id->lazy-ref
-                                             (case mode
-                                               [(has-key?) (field-search-array full-json-path (symbol->string key))]
-                                               [(has-all-keys?) (field-search-array/and full-json-path (map symbol->string key))]
-                                               [(has-any-key?) (field-search-array/or full-json-path (map symbol->string key))]
-                                               [(has-pair?) (field-search-table/key+value  full-json-path (symbol->string key) (value->jsexpr value))]
-                                               [(has-pairs?) (field-search-table/key+value/list full-json-path
-                                                                                                (map symbol->string key)
-                                                                                                (map value-jsexpr value))]))))]
+                            (let ([local-id-stx (hash-ref lookup-by-id id
+                                                          (λ () (raise-syntax-error 'define-saved-mixin
+                                                                                    "unknown saved field" (cadr index-defn) (caar index-defn))))])
+                              (with-syntax ([id local-id-stx]
+                                            [type (datum->syntax (caar index-defn) (caddr index-defn))] 
+                                            [depth (datum->syntax (caar index-defn) (cdddr index-defn))])
+                                (syntax/loc (caar index-defn) (database-create-field-index id 'type depth)))))]
+                         [(define-index-search ...)
+                          (for/list ([(id index-defn) (in-hash indexed-class-vars)])
+                            (with-syntax ([id (hash-ref lookup-by-id id)] 
+                                          [index-name (format-id stx "find-~a-by-~a"
+                                                                 (syntax-e #'name)
+                                                                 (syntax-e (cdar index-defn))
+                                                                 #:source (caar index-defn))]
+                                          [value-path (let loop ([depth (cdddr index-defn)] [acc '()])
+                                                        (if (= 0 depth) acc (loop (sub1 depth) (cons "value" acc))))])
+                              (quasisyntax/loc (caar index-defn)
+                                (splicing-let ([full-json-path (cons (symbol->string id) 'value-path)])
+                                  (unsyntax
+                                   (case (caddr index-defn)
+                                     [(simple string number boolean symbol bytes)
+                                      (syntax/loc (caar index-defn)
+                                        (define (index-name value [operator '=])
+                                          (map id->lazy-ref
+                                               (field-search-op full-json-path operator (value->jsexpr value)))))]
+                                     [(symbol-table)
+                                      (syntax/loc (caar index-defn)
+                                        (define (index-name key [value #f] [mode 'has-key?])
+                                          (map id->lazy-ref
+                                               (case mode
+                                                 [(has-key?) (field-search-array full-json-path (symbol->string key))]
+                                                 [(has-all-keys?) (field-search-array/and full-json-path (map symbol->string key))]
+                                                 [(has-any-key?) (field-search-array/or full-json-path (map symbol->string key))]
+                                                 [(has-pair?) (field-search-table/key+value  full-json-path (symbol->string key) (value->jsexpr value))]
+                                                 [(has-pairs?) (field-search-table/key+value/list full-json-path
+                                                                                                  (map symbol->string key)
+                                                                                                  (map value-jsexpr value))]))))]
 
-                                   [(hash)
-                                    (syntax/loc (caar index-defn)
-                                      (define (index-name key [value #f] [mode 'has-key?])
-                                        (map id->lazy-ref
-                                             (case mode
-                                               [(has-key?) (field-search-array full-json-path (hasheq 'key (value->jsexpr key)))]
-                                               [(has-all-keys?) (field-search-array/and full-json-path (map (λ (k) (hasheq 'key (value->jsexpr k))) key))]
-                                               [(has-any-key?) (field-search-array/or full-json-path (map (λ (k) (hasheq 'key (value->jsexpr k))) key))]
-                                               [(has-pair?) (field-search-table/key+value full-json-path (value->jsexpr key) (value->jsexpr value) #:symbol-table? #f)]
-                                               [(has-pairs?) (field-search-table/key+value/list full-json-path
-                                                                                                (map value->jsexpr key)
-                                                                                                (map value->jsexpr  value) #:symbol-table? #f)]))))]
-                                   [(set list vector)
-                                    (syntax/loc (caar index-defn)
-                                      (define (index-name key-or-keys [mode 'contains?])
-                                        (map id->lazy-ref
-                                             (case mode
-                                               [(contains?) (field-search-array full-json-path (value->jsexpr key-or-keys))]
-                                               [(contains-all?) (field-search-array/and full-json-path (map value->jsexpr key-or-keys))]
-                                               [(contains-any?) (field-search-array/or full-json-path (map value->jsexpr key-or-keys))]))))]
-                                   [else (syntax/loc (caar index-defn)
-                                           (define (index-name value [operator '=])
-                                             (map id->lazy-ref
-                                                  (field-search-op full-json-path operator (hash-ref (value->jsexpr value) 'value)))))]
+                                     [(hash)
+                                      (syntax/loc (caar index-defn)
+                                        (define (index-name key [value #f] [mode 'has-key?])
+                                          (map id->lazy-ref
+                                               (case mode
+                                                 [(has-key?) (field-search-array full-json-path (hasheq 'key (value->jsexpr key)))]
+                                                 [(has-all-keys?) (field-search-array/and full-json-path (map (λ (k) (hasheq 'key (value->jsexpr k))) key))]
+                                                 [(has-any-key?) (field-search-array/or full-json-path (map (λ (k) (hasheq 'key (value->jsexpr k))) key))]
+                                                 [(has-pair?) (field-search-table/key+value full-json-path (value->jsexpr key) (value->jsexpr value) #:symbol-table? #f)]
+                                                 [(has-pairs?) (field-search-table/key+value/list full-json-path
+                                                                                                  (map value->jsexpr key)
+                                                                                                  (map value->jsexpr  value) #:symbol-table? #f)]))))]
+                                     [(set list vector)
+                                      (syntax/loc (caar index-defn)
+                                        (define (index-name key-or-keys [mode 'contains?])
+                                          (map id->lazy-ref
+                                               (case mode
+                                                 [(contains?) (field-search-array full-json-path (value->jsexpr key-or-keys))]
+                                                 [(contains-all?) (field-search-array/and full-json-path (map value->jsexpr key-or-keys))]
+                                                 [(contains-any?) (field-search-array/or full-json-path (map value->jsexpr key-or-keys))]))))]
+                                     [else (syntax/loc (caar index-defn)
+                                             (define (index-name value [operator '=])
+                                               (map id->lazy-ref
+                                                    (field-search-op full-json-path operator (hash-ref (value->jsexpr value) 'value)))))]
                                    
-                                   ))))))]
+                                     ))))))]
                          [cid cid-var])
              (syntax/loc stx
                (splicing-let ([cid (database-get-cid! 'name (relative-module-path (filepath)))])
@@ -1084,62 +1085,62 @@
                                          [depth (datum->syntax (caar index-defn) (cdddr index-defn))])
                              (syntax/loc (caar index-defn) (database-create-field-index id 'type depth)))))]
                       [(define-index-search ...)
-                      (for/list ([(id index-defn) (in-hash indexed-class-vars)])
-                          (with-syntax ([id (hash-ref lookup-by-id id)] 
-                                        [index-name (format-id orig-stx "find-~a-by-~a"
-                                                               (syntax-e name)
-                                                               (syntax-e (cdar index-defn))
-                                                               #:source (caar index-defn))]
-                                        [value-path (let loop ([depth (cdddr index-defn)] [acc '()])
-                                                      (if (= 0 depth) acc (loop (sub1 depth) (cons "value" acc))))])
-                            (quasisyntax/loc (caar index-defn)
-                              (splicing-let ([full-json-path (cons (symbol->string id) 'value-path)])
-                                (unsyntax
-                                 (case (caddr index-defn)
-                                   [(simple string number boolean symbol bytes)
-                                    (syntax/loc (caar index-defn)
-                                      (define (index-name value [operator '=])
-                                        (map id->lazy-ref
-                                             (field-search-op full-json-path operator (value->jsexpr value)))))]
-                                   [(symbol-table)
-                                    (syntax/loc (caar index-defn)
-                                      (define (index-name key [value #f] [mode 'has-key?])
-                                        (map id->lazy-ref
-                                             (case mode
-                                               [(has-key?) (field-search-array full-json-path (symbol->string key))]
-                                               [(has-all-keys?) (field-search-array/and full-json-path (map symbol->string key))]
-                                               [(has-any-key?) (field-search-array/or full-json-path (map symbol->string key))]
-                                               [(has-pair?) (field-search-table/key+value  full-json-path (symbol->string key) (value->jsexpr value))]
-                                               [(has-pairs?) (field-search-table/key+value/list full-json-path
-                                                                                                (map symbol->string key)
-                                                                                                (map value-jsexpr value))]))))]
+                       (for/list ([(id index-defn) (in-hash indexed-class-vars)])
+                         (with-syntax ([id (hash-ref lookup-by-id id)] 
+                                       [index-name (format-id orig-stx "find-~a-by-~a"
+                                                              (syntax-e name)
+                                                              (syntax-e (cdar index-defn))
+                                                              #:source (caar index-defn))]
+                                       [value-path (let loop ([depth (cdddr index-defn)] [acc '()])
+                                                     (if (= 0 depth) acc (loop (sub1 depth) (cons "value" acc))))])
+                           (quasisyntax/loc (caar index-defn)
+                             (splicing-let ([full-json-path (cons (symbol->string id) 'value-path)])
+                               (unsyntax
+                                (case (caddr index-defn)
+                                  [(simple string number boolean symbol bytes)
+                                   (syntax/loc (caar index-defn)
+                                     (define (index-name value [operator '=])
+                                       (map id->lazy-ref
+                                            (field-search-op full-json-path operator (value->jsexpr value)))))]
+                                  [(symbol-table)
+                                   (syntax/loc (caar index-defn)
+                                     (define (index-name key [value #f] [mode 'has-key?])
+                                       (map id->lazy-ref
+                                            (case mode
+                                              [(has-key?) (field-search-array full-json-path (symbol->string key))]
+                                              [(has-all-keys?) (field-search-array/and full-json-path (map symbol->string key))]
+                                              [(has-any-key?) (field-search-array/or full-json-path (map symbol->string key))]
+                                              [(has-pair?) (field-search-table/key+value  full-json-path (symbol->string key) (value->jsexpr value))]
+                                              [(has-pairs?) (field-search-table/key+value/list full-json-path
+                                                                                               (map symbol->string key)
+                                                                                               (map value-jsexpr value))]))))]
 
-                                   [(hash)
-                                    (syntax/loc (caar index-defn)
-                                      (define (index-name key [value #f] [mode 'has-key?])
-                                        (map id->lazy-ref
-                                             (case mode
-                                               [(has-key?) (field-search-array full-json-path (hasheq 'key (value->jsexpr key)))]
-                                               [(has-all-keys?) (field-search-array/and full-json-path (map (λ (k) (hasheq 'key (value->jsexpr k))) key))]
-                                               [(has-any-key?) (field-search-array/or full-json-path (map (λ (k) (hasheq 'key (value->jsexpr k))) key))]
-                                               [(has-pair?) (field-search-table/key+value full-json-path (value->jsexpr key) (value->jsexpr value) #:symbol-table? #f)]
-                                               [(has-pairs?) (field-search-table/key+value/list full-json-path
-                                                                                                (map value->jsexpr key)
-                                                                                                (map value->jsexpr  value) #:symbol-table? #f)]))))]
-                                   [(set list vector)
-                                    (syntax/loc (caar index-defn)
-                                      (define (index-name key-or-keys [mode 'contains?])
-                                        (map id->lazy-ref
-                                             (case mode
-                                               [(contains?) (field-search-array full-json-path (value->jsexpr key-or-keys))]
-                                               [(contains-all?) (field-search-array/and full-json-path (map value->jsexpr key-or-keys))]
-                                               [(contains-any?) (field-search-array/or full-json-path (map value->jsexpr key-or-keys))]))))]
-                                   [else (syntax/loc (caar index-defn)
-                                           (define (index-name value [operator '=])
-                                             (map id->lazy-ref
-                                                  (field-search-op full-json-path operator (hash-ref (value->jsexpr value) 'value)))))]
+                                  [(hash)
+                                   (syntax/loc (caar index-defn)
+                                     (define (index-name key [value #f] [mode 'has-key?])
+                                       (map id->lazy-ref
+                                            (case mode
+                                              [(has-key?) (field-search-array full-json-path (hasheq 'key (value->jsexpr key)))]
+                                              [(has-all-keys?) (field-search-array/and full-json-path (map (λ (k) (hasheq 'key (value->jsexpr k))) key))]
+                                              [(has-any-key?) (field-search-array/or full-json-path (map (λ (k) (hasheq 'key (value->jsexpr k))) key))]
+                                              [(has-pair?) (field-search-table/key+value full-json-path (value->jsexpr key) (value->jsexpr value) #:symbol-table? #f)]
+                                              [(has-pairs?) (field-search-table/key+value/list full-json-path
+                                                                                               (map value->jsexpr key)
+                                                                                               (map value->jsexpr  value) #:symbol-table? #f)]))))]
+                                  [(set list vector)
+                                   (syntax/loc (caar index-defn)
+                                     (define (index-name key-or-keys [mode 'contains?])
+                                       (map id->lazy-ref
+                                            (case mode
+                                              [(contains?) (field-search-array full-json-path (value->jsexpr key-or-keys))]
+                                              [(contains-all?) (field-search-array/and full-json-path (map value->jsexpr key-or-keys))]
+                                              [(contains-any?) (field-search-array/or full-json-path (map value->jsexpr key-or-keys))]))))]
+                                  [else (syntax/loc (caar index-defn)
+                                          (define (index-name value [operator '=])
+                                            (map id->lazy-ref
+                                                 (field-search-op full-json-path operator (hash-ref (value->jsexpr value) 'value)))))]
                                    
-                                   ))))))]
+                                  ))))))]
                       
                       [cid cid-var])
           (syntax/loc orig-stx
@@ -1186,8 +1187,8 @@
 (define (make-authorization obj [duration #f])
   (let ([duration/actual (if (symbol? duration) #f duration)]
         [session? (eq? duration 'session)])
-  (values (make-auth-jwt (send/rackmud obj get-id))
-          (database-make-token (send/rackmud obj get-id) duration/actual session?))))
+    (values (make-auth-jwt (send/rackmud obj get-id))
+            (database-make-token (send/rackmud obj get-id) duration/actual session?))))
 
 (define (get-authorization jwt token)
   (let ([jwt-id (and (string? jwt) (verify-auth-jwt jwt))])
@@ -1221,14 +1222,17 @@
 
 (define (save-all-objects)
   (semaphore-wait object-table/semaphore)
+  (displayln "Starting save transaction...")
   (database-start-transaction!)
-  (with-handlers ([exn? (λ (e) (database-commit-transaction!) (raise e))])
-    (hash-for-each object-table
-                   (λ (oid obj)
-                     (let ([o (weak-box-value (object-record-obj obj))])
-                       (when o (save-object (unbox o)))))))
+  (with-handlers ([exn? (λ (e) (eprintf "Save failed, error incoming ~a\n" e) (database-commit-transaction!) (raise e))])
+    (for ([(oid obj) (in-hash object-table #f)])
+      (when oid
+        (let ([o (weak-box-value (object-record-obj obj))])
+          (when o (save-object (unbox o)))))))
   (database-commit-transaction!)
-  (semaphore-post object-table/semaphore))
+  (displayln "Save transaction committed")
+  (semaphore-post object-table/semaphore)
+  (sleep 1))
 
 
 (define (database-setup db-type db-port db-sock db-srv db-db db-user db-pass)
@@ -1307,3 +1311,9 @@
 
 
 
+(define (get-rackmud-logs #:subjects [subjects #f]
+                           #:level-low [level-low 0] #:level-high [level-high 5]
+                           #:limit [limit #f] #:offset [offset #f] #:text-search [text-search #f]
+                           #:asc? [asc? #f])
+  (database-get-logs #:subjects subjects #:level-low level-low #:level-high level-high #:limit limit
+                     #:offset offset #:asc? asc? #:text-search text-search))
