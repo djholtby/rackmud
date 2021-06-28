@@ -70,7 +70,15 @@
                  (->seconds g)
                  (->nanoseconds g)
                  (if (moment-provider? g) (->utc-offset g) 0)))
-  
+
+(define (->sql-timestamp v)
+  (cond [(sql-timestamp? v) v]
+        [(moment? v) (moment->sql v)]
+        [(string? v)
+         (moment->sql
+          (parse-moment v
+                        "MM/dd/yyyy h:mm aaaa"))]))
+
 (define object-load-stmt
   (virtual-statement
    "SELECT cid, o.created, o.saved, od.fields FROM objects o INNER JOIN object_fields od \
@@ -619,6 +627,7 @@ database-get-cid! : Symbol Path -> Nat
 
 
 
+
 (define (create-logfile-query-parameters levels subjects date-start date-end 
                                   text-search)
   (define next-param-number 1)
@@ -639,21 +648,21 @@ database-get-cid! : Symbol Path -> Nat
         [(subjects)
          (values
           (cons subjects parameters)
-          (cons (format "(subject = ANY($~a::text[]))" (param)) query-text))]
+          (cons (format "(module = ANY($~a::text[]))" (param)) query-text))]
         [(date-range)
          (cond [(and date-start date-end)
                 (values
-                 (list* date-end date-start parameters) 
+                 (list* (->sql-timestamp date-end) (->sql-timestamp date-start) parameters) 
                  (cons (format "(time BETWEEN $~a::timestamp AND $~a::timestamp)" (param) (param))
                        query-text))]
                [date-start
                 (values
-                 (cons date-start parameters) 
+                 (cons (->sql-timestamp date-start) parameters) 
                  (cons (format "(time >= $~a::timestamp)" (param))
                        query-text))]
                [else
                 (values
-                 (cons date-end parameters) 
+                 (cons (->sql-timestamp date-end) parameters) 
                  (cons (format "(time <= $~a::timestamp)" (param))
                        query-text))])]
         [(levels)
@@ -682,11 +691,10 @@ database-get-cid! : Symbol Path -> Nat
   (define query-text
     (string-append "SELECT time, level, module, description, backtrace FROM logfile"
                  (if (null? parameter-values) "" " WHERE ") (string-join where-clause " AND ")
-                 (if limit (format " LIMIT ~a" limit) "")
-                 (if offset (format " OFFSET ~a" offset) "")
                  " ORDER BY time "
-                 (if asc? "ASC" "DESC")))
-          
+                 (if asc? "ASC" "DESC")
+                 (if limit (format " LIMIT ~a" limit) "")
+                 (if offset (format " OFFSET ~a" offset) "")))
   (map transform-log-row (apply query-rows _dbc_ query-text parameter-values)))
        
 (define (database-get-log-counts

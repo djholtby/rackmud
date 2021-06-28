@@ -1,7 +1,9 @@
 #lang racket/base
 
-(require racket/class racket/list racket/hash racket/struct racket/bool racket/string racket/match racket/local racket/set racket/contract
-         (for-syntax racket/base racket/syntax) syntax/modresolve  racket/stxparam racket/splicing racket/rerequire racket/undefined
+(require racket/class racket/list racket/hash racket/struct racket/bool racket/string racket/match
+         racket/local racket/set racket/contract
+         (for-syntax racket/base racket/syntax) syntax/modresolve  racket/stxparam racket/splicing
+         racket/rerequire racket/undefined
          racket/vector)
 
 (require gregor versioned-box json net/base64)
@@ -13,16 +15,18 @@
 
 (provide temp-object%)
 
-(provide trigger-reload! save-all-objects lazy-ref lazy-ref? touch! make-lazyref save-object get-singleton
-         database-setup new/rackmud rackmud-mark-reloads rebuild-channel
-         instantiate/rackmud make-object/rackmud send/rackmud send*/rackmud get-field/rackmud set-field!/rackmud is-a?/rackmud is-a?/c/rackmud
-         object?/rackmud object=?/rackmud object-or-false=?/rackmud object->vector/rackmud object-interface/rackmud
-         object-method-arity-includes?/rackmud field-names/rackmud object-info/rackmud dynamic-send/rackmud
-         send/keyword-apply/rackmud send/apply/rackmud dynamic-get-field/rackmud dynamic-set-field!/rackmud field-bound?/rackmud
+(provide trigger-reload! save-all-objects lazy-ref lazy-ref? touch! make-lazyref save-object
+         get-singleton database-setup new/rackmud rackmud-mark-reloads rebuild-channel
+         instantiate/rackmud make-object/rackmud send/rackmud send*/rackmud get-field/rackmud
+         set-field!/rackmud is-a?/rackmud is-a?/c/rackmud object?/rackmud object=?/rackmud
+         object-or-false=?/rackmud object->vector/rackmud object-interface/rackmud
+         object-method-arity-includes?/rackmud field-names/rackmud object-info/rackmud
+         dynamic-send/rackmud send/keyword-apply/rackmud send/apply/rackmud dynamic-get-field/rackmud
+         dynamic-set-field!/rackmud field-bound?/rackmud
          class-field-accessor/rackmud class-field-mutator/rackmud this/rackmud
-         get-authorization make-authorization get-all-auth-tokens expire-auth-token expire-all-auth-tokens
-         expire-auth-token-and-jwt
-         get-rackmud-logs get-rackmud-log-topics) 
+         get-authorization make-authorization get-all-auth-tokens expire-auth-token
+         expire-all-auth-tokens expire-auth-token-and-jwt
+         get-rackmud-logs get-rackmud-log-topics get-rackmud-log-counts) 
 
 
 (define class-dep-sema (make-semaphore 1))
@@ -1317,13 +1321,13 @@
                            #:date-end [date-end #f]
                            #:limit [limit #f] #:offset [offset #f] #:text-search [text-search #f]
                            #:asc? [asc? #f])
-  (database-get-logs levels subjects date-start date-end text-search limit offset asc?))
+  (database-get-logs (and levels (map log-level->int levels)) subjects date-start date-end text-search limit offset asc?))
 
 (define (get-rackmud-log-counts #:subjects [subjects #f] #:levels [levels #f]
                                 #:date-start [date-start #f] #:date-end [date-end #f]
                                 #:text-search [text-search #f])
   (database-get-log-counts
-   levels subjects date-start date-end text-search))
+   (and levels (map log-level->int levels)) subjects date-start date-end text-search))
 
 (define (get-rackmud-log-topics)
   (database-get-log-topics))
