@@ -22,7 +22,7 @@
          class-field-accessor/rackmud class-field-mutator/rackmud this/rackmud
          get-authorization make-authorization get-all-auth-tokens expire-auth-token expire-all-auth-tokens
          expire-auth-token-and-jwt
-         get-rackmud-logs)
+         get-rackmud-logs get-rackmud-log-topics) 
 
 
 (define class-dep-sema (make-semaphore 1))
@@ -1312,8 +1312,18 @@
 
 
 (define (get-rackmud-logs #:subjects [subjects #f]
-                           #:level-low [level-low 0] #:level-high [level-high 5]
+                           #:levels [levels #f]
+                           #:date-start [date-start #f]
+                           #:date-end [date-end #f]
                            #:limit [limit #f] #:offset [offset #f] #:text-search [text-search #f]
                            #:asc? [asc? #f])
-  (database-get-logs #:subjects subjects #:level-low level-low #:level-high level-high #:limit limit
-                     #:offset offset #:asc? asc? #:text-search text-search))
+  (database-get-logs levels subjects date-start date-end text-search limit offset asc?))
+
+(define (get-rackmud-log-counts #:subjects [subjects #f] #:levels [levels #f]
+                                #:date-start [date-start #f] #:date-end [date-end #f]
+                                #:text-search [text-search #f])
+  (database-get-log-counts
+   levels subjects date-start date-end text-search))
+
+(define (get-rackmud-log-topics)
+  (database-get-log-topics))

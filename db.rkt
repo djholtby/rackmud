@@ -6,7 +6,7 @@
 
 (provide make-rackmud-db-connection make-rackmud-db-pool rackmud-db-version database-log
          database-save-object database-new-object database-get-object database-get-singleton
-         database-make-singleton
+         database-make-singleton 
          database-connected? database-disconnect database-get-cid! load-class file->cids
          set-database-connection!
          database-make-token database-token-refresh database-get-all-tokens database-expire-token
@@ -14,7 +14,7 @@
          database-create-field-index database-get-field-index-ids database-prune-tokens
          parse-sig-token
          database-check-jwt database-prune-jwt-revokation database-revoke-jwt database-get-logs
-
+         database-get-log-topics database-get-log-counts
          log-level->int int->log-level
          
          field-search-array field-search-array/and field-search-array/or
@@ -127,14 +127,16 @@
   (virtual-statement
    "INSERT INTO logfile (level, module, description, backtrace) values ($1, $2, $3, $4)"))
 
-
+#|
 (define log-query/range
   (virtual-statement
    (string-append
-    "SELECT * FROM logfile WHERE (level BETWEEN $1 AND $2) AND "
-    "(($3::text[] IS NULL) OR (module = ANY($3::text[]))) AND "
-    "(($4::text IS NULL) OR (description @@ $4::text)) "
-    "ORDER BY time DESC LIMIT $5 OFFSET $6")))
+    "SELECT * FROM logfile WHERE (($1::timestamp IS NULL) or"
+    "  (time BETWEEN $1::timestamp AND $2::timestamp))"
+    "(level BETWEEN $3 AND $4) AND "
+    "(($5::text[] IS NULL) OR (module = ANY($5::text[]))) AND "
+    "(($6::text IS NULL) OR (description @@ $6::text)) "
+    "ORDER BY time DESC LIMIT $7 OFFSET $8")))
 
 (define log-query/asc/range
   (virtual-statement
@@ -160,6 +162,24 @@
     "(($3::text[] IS NULL) OR (module = ANY($3::text[]))) AND "
     "(($4::text IS NULL) OR (description @@ $4::text)) "
     "ORDER BY time ASC")))
+
+(define log-query-count/filtered
+  (virtual-statement
+   (string-append
+    "SELECT COUNT(*) FROM logfile WHERE (level BETWEEN $1 AND $2) AND "
+    "(($3::text[] IS NULL) OR (module = ANY($3::text[]))) AND "
+    "(($4::text IS NULL) OR (description @@ $4::text)) ")))
+|#
+
+(define log-query-count
+  (virtual-statement
+   "SELECT COUNT(*) FROM logfile"))
+
+
+
+(define log-topic-query
+  (virtual-statement
+   "SELECT DISTINCT module from logfile order by module"))
 
 (define new-token-stmt
   (virtual-statement
@@ -597,22 +617,92 @@ database-get-cid! : Symbol Path -> Nat
   (when expiration
     (query-exec _dbc_ revoke-jwt jwt-string (moment->sql expiration))))
 
-(define (database-get-logs #:subjects [subjects #f]
-                           #:level-low [level-low 0] #:level-high [level-high 5]
-                           #:limit [limit #f] #:offset[offset #f] #:text-search [text-search #f]
-                           #:asc? [asc? #f])
-  (map (λ (row)
-         (match row
-           [(vector time level library message backtrace)
-            (vector (sql->moment time) (int->log-level level) library message
-                    (if (string? backtrace)
-                        (string-split backtrace "\n")
-                        null))]))
-       (if limit
-           (query-rows _dbc_ (if asc? log-query/asc/range log-query/range) level-low level-high
-                       (false->sql-null subjects)
-                       (false->sql-null text-search)
-                       limit offset)
-           (query-rows _dbc_ (if asc? log-query/asc log-query) level-low level-high
-                       (false->sql-null subjects)
-                       (false->sql-null text-search)))))
+
+
+(define (create-logfile-query-parameters levels subjects date-start date-end 
+                                  text-search)
+  (define next-param-number 1)
+  (define (param)
+    (begin0
+      next-param-number
+      (set! next-param-number (add1 next-param-number))))
+  (define filters
+    (map car (filter cdr `((subjects . ,subjects)
+                           (date-range . ,(or date-start date-end))
+                           (levels . ,levels)
+                           (text-search . ,text-search)))))
+  (define-values (parameters query-text)
+    (for/fold ([parameters '()]
+               [query-text '()])
+              ([f (in-list filters)])
+      (case f
+        [(subjects)
+         (values
+          (cons subjects parameters)
+          (cons (format "(subject = ANY($~a::text[]))" (param)) query-text))]
+        [(date-range)
+         (cond [(and date-start date-end)
+                (values
+                 (list* date-end date-start parameters) 
+                 (cons (format "(time BETWEEN $~a::timestamp AND $~a::timestamp)" (param) (param))
+                       query-text))]
+               [date-start
+                (values
+                 (cons date-start parameters) 
+                 (cons (format "(time >= $~a::timestamp)" (param))
+                       query-text))]
+               [else
+                (values
+                 (cons date-end parameters) 
+                 (cons (format "(time <= $~a::timestamp)" (param))
+                       query-text))])]
+        [(levels)
+         (values
+          (cons levels parameters)
+          (cons (format "(level = ANY($~a::int[]))" (param))
+                query-text))]
+        [(text-search)
+         (values
+          (cons text-search parameters)
+          (cons (format "(description @@ $~a::text)" (param)) query-text))])))
+  (values (reverse parameters) (reverse query-text)))
+   
+(define (transform-log-row row)
+  (match row
+    [(vector time level library message backtrace)
+     (vector (sql->moment time) (int->log-level level) library message
+             (if (string? backtrace)
+                 (string-split backtrace "\n")
+                 null))]))
+
+(define (database-get-logs levels subjects date-start date-end text-search limit offset asc?)
+  (define-values (parameter-values where-clause)
+    (create-logfile-query-parameters levels subjects date-start date-end text-search))
+  
+  (define query-text
+    (string-append "SELECT time, level, module, description, backtrace FROM logfile"
+                 (if (null? parameter-values) "" " WHERE ") (string-join where-clause " AND ")
+                 (if limit (format " LIMIT ~a" limit) "")
+                 (if offset (format " OFFSET ~a" offset) "")
+                 " ORDER BY time "
+                 (if asc? "ASC" "DESC")))
+          
+  (map transform-log-row (apply query-rows _dbc_ query-text parameter-values)))
+       
+(define (database-get-log-counts
+         levels subjects date-start date-end text-search)
+  (define total-count (query-value _dbc_ log-query-count))
+  (define-values (parameter-values where-clause)
+    (create-logfile-query-parameters levels subjects date-start date-end text-search))
+  (define filtered-count
+    (if (null? parameter-values)
+        total-count
+        (apply query-value _dbc_
+                     (string-append
+                      "SELECT COUNT(*) FROM LOGFILE WHERE " (string-join where-clause " AND "))
+                     parameter-values)))
+    (values total-count filtered-count))
+  
+
+        (define (database-get-log-topics)
+          (query-list _dbc_ log-topic-query))
