@@ -409,17 +409,29 @@
                     [new-object (hot-reload old-object)])
                (set-object-record-wants-reload?! orec #f)
                (semaphore-post (object-record-semaphore orec))
-               (semaphore-post (object-record-reload-semaphore orec)))))
-         (loop))))))
+               (semaphore-post (object-record-reload-semaphore orec))))))
+         (loop)))))
          
 (define (trigger-reload! o)
   (thread-send object-reload-thread (list (get-object-record (maybe-lazy-deref o)))))
 
 (define (rackmud-mark-reloads changed-files)
-  (thread-send object-reload-thread
-               (cid-list->objects
-                (foldl append empty
-                       (map file->cids changed-files)))))
+  (define modified-class-ids
+    (foldl append empty (map file->cids changed-files)))
+  (log-message (current-logger)
+               'info
+               'rackmud
+               "Reloading modified classes"
+               #f #f)
+  (define objects-needing-reload
+    (cid-list->objects modified-class-ids))
+  (log-message (current-logger)
+               'debug
+               'rackmud
+               (format "Modified CIDs: ~v"
+                       modified-class-ids))
+  
+  (thread-send object-reload-thread objects-needing-reload))
 
 (define (add-thread-to-object orec)
   (semaphore-wait (object-record-semaphore orec))
@@ -1228,7 +1240,10 @@
   (semaphore-wait object-table/semaphore)
   (displayln "Starting save transaction...")
   (database-start-transaction!)
-  (with-handlers ([exn? (λ (e) (eprintf "Save failed, error incoming ~a\n" e) (database-commit-transaction!) (raise e))])
+  (with-handlers ([exn? (λ (e)
+                          (eprintf "Save failed, error incoming ~a\n" e)
+                          (database-commit-transaction!)
+                          (raise e))])
     (for ([(oid obj) (in-hash object-table #f)])
       (when oid
         (let ([o (weak-box-value (object-record-obj obj))])
@@ -1244,6 +1259,7 @@
    
 
 (define (hot-reload old-object)
+  ;(log-message (current-logger) 'debug 'rackmud (format "Hot Reload: ~v" old-object) #f #f)
   (let ([new-object (new (load-class (send old-object get-cid))
                          [id (send old-object get-id)]
                          [name (get-field name old-object)])])
@@ -1316,11 +1332,11 @@
 
 
 (define (get-rackmud-logs #:subjects [subjects #f]
-                           #:levels [levels #f]
-                           #:date-start [date-start #f]
-                           #:date-end [date-end #f]
-                           #:limit [limit #f] #:offset [offset #f] #:text-search [text-search #f]
-                           #:asc? [asc? #f])
+                          #:levels [levels #f]
+                          #:date-start [date-start #f]
+                          #:date-end [date-end #f]
+                          #:limit [limit #f] #:offset [offset #f] #:text-search [text-search #f]
+                          #:asc? [asc? #f])
   (database-get-logs (and levels (map log-level->int levels)) subjects date-start date-end text-search limit offset asc?))
 
 (define (get-rackmud-log-counts #:subjects [subjects #f] #:levels [levels #f]

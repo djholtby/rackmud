@@ -79,16 +79,21 @@
 (place-channel-put compiler-place mudlib-collect)
 (place-channel-put compiler-place (hash-ref cfg 'compile-mudlib-on-launch? #t))
 
-(define rackmud-logger (make-logger #f (current-logger) 'warning #f))
-(current-logger rackmud-logger)
+;(define rackmud-logger (make-logger #f (current-logger) 'warning #f))
+;(current-logger rackmud-logger)
 (define rackmud-log-rec
-  (make-log-receiver (current-logger) 'debug 'rackmud 'info 'grapevine 'warning))
+  (make-log-receiver (current-logger)
+                     'debug 'compiler-place
+                     'debug 'rackmud:auth
+                     'debug 'rackmud
+                     'info 'grapevine
+                     'warning)) ; default level to log
 
 (parameterize ([current-library-collection-paths
                 (if mudlib/path
                     (cons  mudlib/path (current-library-collection-paths))
                     (current-library-collection-paths))]
-               [current-logger rackmud-logger]
+               ;[current-logger rackmud-logger]
                [jwt-secret (get-jwt-secret)]
                [jwt-duration (hash-ref cfg 'jwt-duration 600)]
                [jwt-domain (hash-ref cfg 'server-domain #f)]
@@ -177,7 +182,7 @@
         (database-setup (if (string? db-type) (string->symbol db-type) db-type)
                         db-port db-sock db-srv db-db db-user db-pass)))
     (printf "connected in ~vms\n" (round (inexact->exact (- (current-inexact-milliseconds) t0))))
-
+    (log-message (current-logger) 'info 'rackmud "Server starting up..." #f #f)
     ;; wait for the compiler place to finish its thing
     (define initial-build-response (place-channel-get compiler-place))
     (unless (eq? #t initial-build-response)
@@ -365,7 +370,7 @@
                'rackmud
                (format "Startup completed in ~vms"
                        (round (inexact->exact (- (current-inexact-milliseconds) t-master))))
-               #f)
+               #f #f)
     
     (if (rackmud:proxy-mode)
         (printf "Webserver running in proxy mode [~a].  Listening at ~a\n"
@@ -384,9 +389,11 @@
     (define (rackmud-rebuild!)
       (define changes-or-exn
         (place-channel-put/get compiler-place #t))
+      (log-message (current-logger) 'debug 'compiler-place
+                   (format "Compiler Place reports compilation completed: ~v" changes-or-exn) #f #f)
       (match changes-or-exn
         [(? cons?) (rackmud-mark-reloads changes-or-exn) #t]
-        [(? string?) (log-message rackmud-logger 'error 'compiler-place changes-or-exn) #f]
+        [(? string?) (log-message (current-logger) 'error 'compiler-place changes-or-exn #f #f) #f]
         [else #t]))
 
     (define rebuild-thread
@@ -394,7 +401,11 @@
        (λ ()
          (let loop ()
            (sync rebuild-channel)
-           (rackmud-rebuild!)
+           (log-message (current-logger) 'info 'compiler-place
+                        "Received rebuild request" #f #f)
+           (log-message (current-logger) 'info 'compiler-place
+                        (format "Rebuild returned result: ~v" (rackmud-rebuild!))
+                        #f #f)
            (loop)))))
 
     (define jwt-prune-thread
@@ -417,7 +428,7 @@
                  'info
                  'rackmud
                  "Shutdown sequence begun"
-                 #f)
+                 #f #f)
       (when cert-thread (kill-thread cert-thread))
       (when telnet-thread (kill-thread telnet-thread))
       (when telnet-serv (tcp-close telnet-serv))

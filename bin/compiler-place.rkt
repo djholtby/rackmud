@@ -16,14 +16,18 @@
     (define failed? #f)
     (define mudlib-collect-regexp
       (regexp (format "^\\s*checking: (~a.*)$" (regexp-quote (path->string (collection-path (symbol->string mudlib-collect)))))))
+    (define changes (box '()))
     (define filtered-output-port
       (let ([o (current-output-port)])
         (make-output-port 'filtered-out
                           o
                           (λ (bs start end non-blocking? enable-breaks?)
-                            (when (regexp-match #px"^\\s*compiling" (subbytes bs start end))
+                            (define m (regexp-match #px"^\\s*compiling (.*)$"
+                                                    (subbytes bs start end)))
+                            (when m
                               (write-bytes bs o start end)
-                              (displayln "" o))
+                              (displayln "" o)
+                              (set-box! changes (cons (cadr m) (unbox changes))))
                             (- end start))
                           (λ () (close-output-port o)))))
 
@@ -41,12 +45,9 @@
       (place-channel-put p-chan #t)
     
       (let loop ()
-        (define changes '())
+        (set-box! changes '()) 
         (sync p-chan)
-        (sleep 1)
         (with-handlers ([exn? (λ (e)
-                                (log-message (current-logger) 'error (format "error recompiling mudlib: ~a" (exn-message e))
-                                             (exn-continuation-marks e))
                                 (place-channel-put p-chan (exn-message e))
                                 (loop))])
           (parameterize ([current-output-port filtered-output-port])
@@ -55,7 +56,7 @@
                                      (if (eq? name 'name) (symbol->string mudlib-collect) (thunk)))
                                    #:verbose #t
                                    #:skip-doc-sources? #t)))
-        (place-channel-put p-chan changes)
+        (place-channel-put p-chan (map bytes->path (unbox changes)))
         (loop)))))
 
     

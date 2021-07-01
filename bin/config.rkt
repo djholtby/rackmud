@@ -10,7 +10,7 @@
            (mudlib-collect . "mudlib")
            (master-module . "main.rkt")
            (master-classname . "custom-master%")
-           (thread-count . 4)
+           (thread-count . 16)
            (telnet:port . 4000)
            (telnet:encodings . ("ASCII"))
            (webserver:port . 8000)

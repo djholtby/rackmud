@@ -39,7 +39,9 @@
                            (decode/verify jwt "HS384" (jwt-secret)
                                           #:iss (jwt-domain)
                                           #:aud (jwt-domain)))])
-      (and verified-jwt (claims-ref verified-jwt 'user-id))))
+    (cond [verified-jwt (claims-ref verified-jwt 'user-id)]
+          [else (log-message (current-logger)
+                             'warning (format "Recieved an invalid JWT - ~a" jwt) #f #f)])))
                   
 
 ;; auth-jwt-exp: Str -> (or DateTime #f)
@@ -60,5 +62,13 @@
   (let-values ([(id duration new-token)
          (database-token-refresh old-token)])
     (if new-token
-        (values id duration (make-auth-jwt id) new-token)
-        (values #f #f #f #f))))
+        (begin
+          (log-message (current-logger)
+                       'debug 'rackmud:auth (format "JWT refreshed - id=~a" id) #f #f)
+          (values id duration (make-auth-jwt id) new-token))
+        (begin
+          (when old-token ; if old-token is #f it just means this isn't a refresh, it's a login
+            (log-message (current-logger)
+                         'warning 'rackmud:auth (format "JWT refresh failed - id=~a token=~a"
+                                                        id old-token) #f #f))
+          (values #f #f #f #f)))))

@@ -12,5 +12,6 @@
   (syntax-case stx ()
     [(_ level topic message ...)
      (syntax/loc stx
-       (log-message (current-logger) level topic (log-format message ...) (current-continuation-marks)))]))
+       (log-message (current-logger) level topic (log-format message ...)
+                    (current-continuation-marks) #f))]))
 

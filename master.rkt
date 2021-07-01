@@ -141,7 +141,7 @@ The connection manager will send a telnet-object to it whenever a user connects.
                'info
                'rackmud
                "Master object shutdown method completed"
-               #f)
+               #f #f)
   (scheduler-stop! scheduler)
   (displayln "Stopped scheduler")
   (when webserver
@@ -151,7 +151,7 @@ The connection manager will send a telnet-object to it whenever a user connects.
                  'info
                  'rackmud
                  "Webserver stopped"
-               #f))
+                 #f #f))
   (for-each kill-thread thread-pool)
   (set! thread-pool #f)
   (displayln "Killed thread pool")
@@ -159,14 +159,14 @@ The connection manager will send a telnet-object to it whenever a user connects.
                'info
                'rackmud
                "Thread pool terminated"
-               #f)
+               #f #f)
   (save-all-objects)
   (displayln "Saved cached objects")
   (log-message (current-logger)
                'info
                'rackmud
                "Saved cached objects successfully"
-               #f)
+               #f #f)
   
   (database-disconnect)
   (displayln "Closed database connection"))
