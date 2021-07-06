@@ -25,7 +25,7 @@
 
 
 (define menu%
-  (class* temp-object% (conn<%>)
+  (class* object% (conn<%>)
     (super-new)
     (init [initial-state #f]
           [enter-on-create? #f]

@@ -13,7 +13,7 @@
 (provide saved-object% define-saved-class* define-saved-class 
          define-saved-mixin)
 
-(provide temp-object%)
+;(provide temp-object%)
 
 (provide trigger-reload! save-all-objects lazy-ref lazy-ref? touch! make-lazyref save-object
          get-singleton database-setup new/rackmud rackmud-mark-reloads rebuild-channel
@@ -25,8 +25,8 @@
          dynamic-set-field!/rackmud field-bound?/rackmud
          class-field-accessor/rackmud class-field-mutator/rackmud this/rackmud
          get-authorization make-authorization get-all-auth-tokens expire-auth-token
-         expire-all-auth-tokens expire-auth-token-and-jwt
-         get-rackmud-logs get-rackmud-log-topics get-rackmud-log-counts) 
+         expire-all-auth-tokens expire-auth-token-and-jwt find-objects-by-class
+         get-rackmud-logs get-rackmud-log-topics get-rackmud-log-counts)
 
 
 (define class-dep-sema (make-semaphore 1))
@@ -41,6 +41,7 @@
 (define copy-live-state/k (generate-member-key))
 (define load-live-state/k (generate-member-key))
 (define get-cid/k (generate-member-key))
+(define get-all-cids/k (generate-member-key))
 (define get-self/k (generate-member-key))
 
 (define-member-name save save/k)
@@ -49,6 +50,7 @@
 (define-member-name copy-live-state copy-live-state/k)
 (define-member-name load-live-state load-live-state/k)
 (define-member-name get-cid get-cid/k)
+(define-member-name get-all-cids get-all-cids/k)
 (define-member-name get-self get-self/k)  
 
 
@@ -99,18 +101,20 @@
 (define (touch! lr)
   (void (lazy-deref lr)))
 
-;; (lazy-deref lr) produces the object pointed to by lr (from the object table if possible, the database otherwise)
-;;  produces #f if the object cannot be found in the o-table or the database (i.e. the object has been deleted)
+;; (lazy-deref lr) produces the object pointed to by lr (from the object table if possible,
+;;  the database otherwise).  produces #f if the object cannot be found in the o-table or the
+;;  database (i.e. the object has been deleted)
 ;;  If the object was found, updates its last-access field to the current time
-;; lazy-deref: Lazy-Ref -> (U (Instance Mud-Object%) #f)
+;; lazy-deref: Lazy-Ref -> (U (Instance Saved-Object%) #f)
 
 (define (lazy-deref lr)
   (define result (lazy-deref/no-keepalive lr))
   (when result (set-field! last-access result (now/moment/utc)))
   result)
 
-;; (lazy-deref/no-keepalive lr) is the same as lazy-deref except the object's last-access field is not updated
-;;    Use this to query an object without making it seem "still in use"
+;; (lazy-deref/no-keepalive lr) is the same as lazy-deref except the object's last-access field is not
+;;    updated.  Use this to query an object without making it seem "still in use"
+
 (define (lazy-deref/no-keepalive lr)
   (unless (lazy-ref? lr) (raise-argument-error 'lazy-deref "lazy-ref?" lr))
   (define id (lazy-ref-id lr))
@@ -255,13 +259,16 @@
                                          (hash-set! result k (jsexpr->value v)))))
              result)))]
     [(struct)
-     (apply make-prefab-struct (jsexpr->value (hash-ref v 'key)) (map jsexpr->value (hash-ref v 'value)))]
+     (apply make-prefab-struct (jsexpr->value (hash-ref v 'key)) (map jsexpr->value
+                                                                      (hash-ref v 'value)))]
     [(pair)
      (cons
       (jsexpr->value (hash-ref v 'car))
       (jsexpr->value (hash-ref v 'cdr)))]
     [(lazy-ref)
-     (lazy-ref (hash-ref v 'value) #f)]
+     ((if (hash-ref v 'weak? #f)
+         lazy-ref:weak lazy-ref)
+      (hash-ref v 'value) #f)]
     [(set)
      (apply (code->set (hash-ref v 'type))
             (map jsexpr->value (hash-ref v 'value)))]
@@ -301,8 +308,13 @@
 
 (define object-table/semaphore (make-semaphore 1))
 (define object-table (make-hasheqv empty))
+
+(define cid-tables/semaphore (make-semaphore 1))
 (define cid-to-object-table (make-hasheqv empty))
 (define class-to-cid-table (make-hasheq empty))
+(define class-to-ancestors-table (make-hasheq empty))
+
+
 
 
 (define object-executor (make-will-executor))
@@ -458,13 +470,8 @@
             OBJECTS
 |||||||||||||||||||||||||||||||||||#
 
-(define temp-object%
-  (class object%
-    (super-new)
-    (define/public (get-id) #f)))
-
-(define saveable<%> (interface () save save-index load on-create on-load on-hot-reload copy-live-state load-live-state updated
-                      set-id! get-cid get-self get-id))
+(define saveable<%> (interface () save save-index load on-create on-load on-hot-reload copy-live-state
+                      load-live-state updated set-id! get-cid get-all-cids get-self get-id))
 
 (define saved-object% (class* object% (saveable<%> equal<%>)
                         (super-new)
@@ -483,7 +490,7 @@
                       
                         (field [loaded #f]) ; when it was loaded from the database
                       
-                        ; (save) for a mud object produces a hash that maps field identifier symbols to values
+                        ; (save) produces a hash that maps field identifier symbols to values
                         (define/public (save)
                           (make-hasheq))
 
@@ -503,6 +510,7 @@
                           (hash-code _id_))
                         
                         (abstract get-cid)
+                        (define/public (get-all-cids) '())
                         (define/public (get-id) _id_)
                         (define/public (set-id! id) (set! _id_ id))
                         
@@ -532,7 +540,8 @@
 
                       
 
-                        ;; (updated) notes that the object has been updated just now (call this any time you change the object outside of
+                        ;; (updated) notes that the object has been updated just now
+                        ;;  (call this any time you change the object outside of
                         ;;  set-field! which already does this)
                         (define/public (updated)
                           (vbox-set! last-update (now/moment/utc)))
@@ -557,10 +566,14 @@
                     [orec (hash-ref object-table (lazy-ref-id o))])
                 (dynamic-wind
                  (lambda () (if started?
-                                (raise (make-exn:fail:contract:continuation "illegal jump into saved-object method after it already returned"
-                                                                            (current-continuation-marks)))
+                                (raise
+                                 (make-exn:fail:contract:continuation
+                                  "illegal jump into saved-object method after it already returned"
+                                  (current-continuation-marks)))
                                 (add-thread-to-object orec)))
-                 (lambda () (set! started? #t) ((unsyntax-splicing the-thing/pre) o2 (unsyntax-splicing the-thing/post)))
+                 (lambda () (set! started? #t) ((unsyntax-splicing the-thing/pre)
+                                                o2
+                                                (unsyntax-splicing the-thing/post)))
                  (lambda () (remove-thread-from-object orec))))
               ((unsyntax-splicing the-thing/pre)  o (unsyntax-splicing the-thing/post)))))))
 
@@ -778,21 +791,25 @@
 
 
 
-;; (define-saved-class name super-expression mud-defn-or-expr ...) defines a saved-class descended from super-expression
+;; (define-saved-class name super-expression mud-defn-or-expr ...) defines a saved-class descended
+;;   from super-expression
 ;; mud-defn-or-expr: as the regular class defn-or-expr, but with nosave varieties for all fields 
 
 (define-syntax (define-saved-class* stx)
   (syntax-case stx ()
     [(_ name super-expression (interface-expr ...)  body ...)
      ;     (with-syntax ([orig-stx stx])
-     (define-saved-class/priv stx 'define-saved-class* #'name #'super-expression (syntax->list #'(interface-expr ...)) (syntax->list #'(body ...)))]))
+     (define-saved-class/priv stx 'define-saved-class* #'name #'super-expression
+       (syntax->list #'(interface-expr ...)) (syntax->list #'(body ...)))]))
 
-;; (define-saved-class name super-expression body ...) is equivalent to (define-saved-class* name super-expression () body ...)
+;; (define-saved-class name super-expression body ...) is equivalent to
+;;  (define-saved-class* name super-expression () body ...)
 
 (define-syntax (define-saved-class stx)
   (syntax-case stx ()
     [(_ name super-expression body ...)
-     (define-saved-class/priv stx 'define-saved-class #'name #'super-expression '() (syntax->list #'(body ...)))]))
+     (define-saved-class/priv stx 'define-saved-class #'name #'super-expression '()
+       (syntax->list #'(body ...)))]))
 
 (define-for-syntax (get-type-info who type-decl)
   (let loop ([type-decl type-decl]
@@ -816,7 +833,8 @@
         (let ([v (f (car lst))])
           (if v (cons v (loop (cdr lst))) (loop (cdr lst)))))))
 
-;; (wrap-saved-class-exprs def-or-exprs) converts all /nosave and /index variants to plain class syntax, and returns a list of the new syntaxes
+;; (wrap-saved-class-exprs def-or-exprs) converts all /nosave and /index variants to plain class
+;;   syntax, and returns a list of the new syntaxes
 ;;   a list of all saved variables, and a list of all indexed variables
 
 (define-for-syntax (wrap-saved-class-exprs who def-or-exprs)
@@ -824,8 +842,8 @@
         [indexed-class-vars (make-hasheq)]
         [unsaved-class-vars '()])
     (define (wrap-def-or-expr doe)
-      (syntax-case doe (define define/nosave define-values define-values/nosave field field/nosave init-field
-                         init-field/nosave index begin)
+      (syntax-case doe (define define/nosave define-values define-values/nosave field field/nosave
+                         init-field init-field/nosave index begin)
         [(index index-clause ...)
          (let loop ([lst-of-clause (syntax->list #'(index-clause ...))]
                     [index-data (hasheq)])
@@ -836,82 +854,98 @@
                        [[id type-decl]
                         (hash-set! indexed-class-vars
                                    (syntax-e #'id)
-                                   (cons (cons #'id #'id) (cons doe (get-type-info who (syntax->datum #'type-decl)))))]
+                                   (cons (cons #'id #'id) (cons doe (get-type-info
+                                                                     who
+                                                                     (syntax->datum #'type-decl)))))]
                        [[id type-decl alt-id]
                         (hash-set! indexed-class-vars
                                    (syntax-e #'id)
-                                   (cons (cons #'id #'alt-id) (cons doe (get-type-info who (syntax->datum #'type-decl)))))]
+                                   (cons (cons #'id #'alt-id) (cons doe
+                                                                    (get-type-info
+                                                                     who
+                                                                     (syntax->datum #'type-decl)))))]
                                    
                        [id
                         (hash-set! indexed-class-vars
                                    (syntax-e #'id)
                                    (cons (cons #'id #'id) (cons doe (cons 'simple 0))))]))))
          #f]
-        [(define  id expr) (begin (set! saved-class-vars (cons #'id saved-class-vars)) (syntax/loc doe (define id expr)))]
-        [(define/nosave  id expr) (begin (set! unsaved-class-vars (cons #'id unsaved-class-vars)) (syntax/loc doe (define id expr)))]
-        [(define-values (id ...) expr) (begin (for-each (λ (id) (with-syntax ([id id]) (set! saved-class-vars (cons #'id saved-class-vars))))
-                                                        (syntax->list #'(id ...)))
-                                              (syntax/loc doe  (define-values (id ...) expr)))]
-        [(define-values/nosave (id ...) expr) (begin (for-each (λ (id) (with-syntax ([id id])
-                                                                         (set! unsaved-class-vars (cons #'id unsaved-class-vars))))
-                                                               (syntax->list #'(id ...)))
-                                                     (syntax/loc doe (define-values (id ...) expr)))]
-        [(field field-decl ...) (begin
-                                  (for-each (λ (field-decl)
-                                              (syntax-case field-decl ()
-                                                [((internal-id external-id) default-value-expr)
-                                                 (begin
-                                                   (set! saved-class-vars (cons #'internal-id saved-class-vars))
-                                                   #'((internal-id external-id) default-value-expr))]
-                                                [(id default-value-expr)
-                                                 (begin
-                                                   (set! saved-class-vars (cons #'id saved-class-vars))
-                                                   #'(id default-value-expr))]
-                                                [(default ...) #'(default ...)]))
-                                            (syntax->list #'(field-decl ...)))
-                                  (syntax/loc doe (field field-decl ...)))]
-        [(init-field field-decl ...) (begin
-                                       (for-each (λ (field-decl)
-                                                   (syntax-case field-decl ()
-                                                     [((internal-id external-id) default-value-expr)
-                                                      (begin
-                                                        (set! saved-class-vars (cons #'internal-id saved-class-vars))
-                                                        #'((internal-id external-id) default-value-expr))]
-                                                     [(id default-value-expr)
-                                                      (begin
-                                                        (set! saved-class-vars (cons #'id saved-class-vars))
-                                                        #'(id default-value-expr))]
-                                                     [(default ...) #'(default ...)]))
-                                                 (syntax->list #'(field-decl ...)))
-                                       (syntax/loc doe (init-field field-decl ...)))]
-        [(field/nosave field-decl ...) (begin
-                                         (for-each (λ (field-decl)
-                                                     (syntax-case field-decl ()
-                                                       [((internal-id external-id) default-value-expr)
-                                                        (begin
-                                                          (set! unsaved-class-vars (cons #'internal-id unsaved-class-vars))
-                                                          #'((internal-id external-id) default-value-expr))]
-                                                       [(id default-value-expr)
-                                                        (begin
-                                                          (set! unsaved-class-vars (cons #'id unsaved-class-vars))
-                                                          #'(id default-value-expr))]
-                                                       [(default ...) #'(default ...)]))
-                                                   (syntax->list #'(field-decl ...)))
-                                         (syntax/loc doe (field field-decl ...)))]
-        [(init-field/nosave field-decl ...) (begin
-                                              (for-each (λ (field-decl)
-                                                          (syntax-case field-decl ()
-                                                            [((internal-id external-id) default-value-expr)
-                                                             (begin
-                                                               (set! unsaved-class-vars (cons #'internal-id unsaved-class-vars))
-                                                               #'((internal-id external-id) default-value-expr))]
-                                                            [(id default-value-expr)
-                                                             (begin
-                                                               (set! unsaved-class-vars (cons #'id unsaved-class-vars))
-                                                               #'(id default-value-expr))]
-                                                            [(default ...) #'(default ...)]))
-                                                        (syntax->list #'(field-decl ...)))
-                                              (syntax/loc doe (init-field field-decl ...)))]
+        [(define  id expr)
+         (begin (set! saved-class-vars (cons #'id saved-class-vars))
+                (syntax/loc doe (define id expr)))]
+        [(define/nosave  id expr)
+         (begin (set! unsaved-class-vars (cons #'id unsaved-class-vars))
+                (syntax/loc doe (define id expr)))]
+        [(define-values (id ...) expr)
+         (begin (for-each (λ (id) (with-syntax ([id id])
+                                    (set! saved-class-vars (cons #'id saved-class-vars))))
+                          (syntax->list #'(id ...)))
+                (syntax/loc doe  (define-values (id ...) expr)))]
+        [(define-values/nosave (id ...) expr)
+         (begin (for-each (λ (id) (with-syntax ([id id])
+                                    (set! unsaved-class-vars (cons #'id unsaved-class-vars))))
+                          (syntax->list #'(id ...)))
+                (syntax/loc doe (define-values (id ...) expr)))]
+        [(field field-decl ...)
+         (begin
+           (for-each (λ (field-decl)
+                       (syntax-case field-decl ()
+                         [((internal-id external-id) default-value-expr)
+                          (begin
+                            (set! saved-class-vars (cons #'internal-id saved-class-vars))
+                            #'((internal-id external-id) default-value-expr))]
+                         [(id default-value-expr)
+                          (begin
+                            (set! saved-class-vars (cons #'id saved-class-vars))
+                            #'(id default-value-expr))]
+                         [(default ...) #'(default ...)]))
+                     (syntax->list #'(field-decl ...)))
+           (syntax/loc doe (field field-decl ...)))]
+        [(init-field field-decl ...)
+         (begin
+           (for-each (λ (field-decl)
+                       (syntax-case field-decl ()
+                         [((internal-id external-id) default-value-expr)
+                          (begin
+                            (set! saved-class-vars (cons #'internal-id saved-class-vars))
+                            #'((internal-id external-id) default-value-expr))]
+                         [(id default-value-expr)
+                          (begin
+                            (set! saved-class-vars (cons #'id saved-class-vars))
+                            #'(id default-value-expr))]
+                         [(default ...) #'(default ...)]))
+                     (syntax->list #'(field-decl ...)))
+           (syntax/loc doe (init-field field-decl ...)))]
+        [(field/nosave field-decl ...)
+         (begin
+           (for-each (λ (field-decl)
+                       (syntax-case field-decl ()
+                         [((internal-id external-id) default-value-expr)
+                          (begin
+                            (set! unsaved-class-vars (cons #'internal-id unsaved-class-vars))
+                            #'((internal-id external-id) default-value-expr))]
+                         [(id default-value-expr)
+                          (begin
+                            (set! unsaved-class-vars (cons #'id unsaved-class-vars))
+                            #'(id default-value-expr))]
+                         [(default ...) #'(default ...)]))
+                     (syntax->list #'(field-decl ...)))
+           (syntax/loc doe (field field-decl ...)))]
+        [(init-field/nosave field-decl ...)
+         (begin
+           (for-each (λ (field-decl)
+                       (syntax-case field-decl ()
+                         [((internal-id external-id) default-value-expr)
+                          (begin
+                            (set! unsaved-class-vars (cons #'internal-id unsaved-class-vars))
+                            #'((internal-id external-id) default-value-expr))]
+                         [(id default-value-expr)
+                          (begin
+                            (set! unsaved-class-vars (cons #'id unsaved-class-vars))
+                            #'(id default-value-expr))]
+                         [(default ...) #'(default ...)]))
+                     (syntax->list #'(field-decl ...)))
+           (syntax/loc doe (init-field field-decl ...)))]
         [(begin clause ...)
          (let ([wrapped-subclauses (map-filter wrap-def-or-expr (syntax->list #'(clause ...)))])
            (with-syntax ([(wrapped-clause ...) wrapped-subclauses])
@@ -932,24 +966,28 @@
              [local-field-names (generate-temporaries saved-class-vars)])
          (let  (
                 ;; List of syntaxes needed to save the saved-fields
-                [save-list (map (λ (id local-name) (with-syntax ([id id]
-                                                                 [local-name local-name])
-                                                     #'(hash-set! result local-name id)))
+                [save-list (map (λ (id local-name)
+                                  (with-syntax ([id id]
+                                                [local-name local-name])
+                                    #'(hash-set! result local-name id)))
                                 saved-class-vars local-field-names)]
                 [save-unsaved-list (map (λ (id) (with-syntax ([id id])
                                                   #'(hash-set! result 'id id)))
                                         unsaved-class-vars)]
                 ;; List of syntaxes needed to load the saved-fields
-                [load-list (map (λ (id local-name) (with-syntax ([id id]
-                                                                 [local-name local-name])
-                                                     #'(set! id (hash-ref vars local-name undefined))))
+                [load-list (map (λ (id local-name)
+                                  (with-syntax ([id id]
+                                                [local-name local-name])
+                                    #'(set! id (hash-ref vars local-name undefined))))
                                 saved-class-vars local-field-names)]
-                [load-unsaved-list (map (λ (id) (with-syntax ([id id])
-                                                  #'(set! id (hash-ref vars 'id undefined))))
+                [load-unsaved-list (map (λ (id)
+                                          (with-syntax ([id id])
+                                            #'(set! id (hash-ref vars 'id undefined))))
                                         unsaved-class-vars)]
-                [lookup-by-id (make-hasheq (map (λ (id-stx local-identifier)
-                                                  (cons (syntax->datum id-stx) local-identifier))
-                                                saved-class-vars local-field-names))])
+                [lookup-by-id (make-hasheq (map
+                                            (λ (id-stx local-identifier)
+                                              (cons (syntax->datum id-stx) local-identifier))
+                                            saved-class-vars local-field-names))])
            (with-syntax ([(def-or-exp ... ) wrapped-def-or-exprs]
                          [(save-id ...) saved-class-vars]
                          [(var-save ...) save-list]
@@ -960,13 +998,21 @@
                          [(create-index ...)
                           (for/list ([(id index-defn) (in-hash indexed-class-vars)])
                          
-                            (let ([local-id-stx (hash-ref lookup-by-id id
-                                                          (λ () (raise-syntax-error 'define-saved-mixin
-                                                                                    "unknown saved field" (cadr index-defn) (caar index-defn))))])
+                            (let ([local-id-stx
+                                   (hash-ref lookup-by-id id
+                                             (λ ()
+                                               (raise-syntax-error
+                                                'define-saved-mixin
+                                                "unknown saved field"
+                                                (cadr index-defn)
+                                                (caar index-defn))))])
                               (with-syntax ([id local-id-stx]
-                                            [type (datum->syntax (caar index-defn) (caddr index-defn))] 
-                                            [depth (datum->syntax (caar index-defn) (cdddr index-defn))])
-                                (syntax/loc (caar index-defn) (database-create-field-index id 'type depth)))))]
+                                            [type (datum->syntax (caar index-defn)
+                                                                 (caddr index-defn))] 
+                                            [depth (datum->syntax (caar index-defn)
+                                                                  (cdddr index-defn))])
+                                (syntax/loc (caar index-defn)
+                                  (database-create-field-index id 'type depth)))))]
                          [(define-index-search ...)
                           (for/list ([(id index-defn) (in-hash indexed-class-vars)])
                             (with-syntax ([id (hash-ref lookup-by-id id)] 
@@ -975,85 +1021,160 @@
                                                                  (syntax-e (cdar index-defn))
                                                                  #:source (caar index-defn))]
                                           [value-path (let loop ([depth (cdddr index-defn)] [acc '()])
-                                                        (if (= 0 depth) acc (loop (sub1 depth) (cons "value" acc))))])
+                                                        (if (= 0 depth)
+                                                            acc
+                                                            (loop (sub1 depth) (cons "value" acc))))])
                               (quasisyntax/loc (caar index-defn)
-                                (splicing-let ([full-json-path (cons (symbol->string id) 'value-path)])
+                                (splicing-let ([full-json-path (cons (symbol->string id)
+                                                                     'value-path)])
                                   (unsyntax
                                    (case (caddr index-defn)
                                      [(simple string number boolean symbol bytes)
                                       (syntax/loc (caar index-defn)
                                         (define (index-name value [operator '=])
                                           (map id->lazy-ref
-                                               (field-search-op full-json-path operator (value->jsexpr value)))))]
+                                               (field-search-op full-json-path operator
+                                                                (value->jsexpr value)))))]
                                      [(symbol-table)
                                       (syntax/loc (caar index-defn)
                                         (define (index-name key [value #f] [mode 'has-key?])
                                           (map id->lazy-ref
                                                (case mode
-                                                 [(has-key?) (field-search-array full-json-path (symbol->string key))]
-                                                 [(has-all-keys?) (field-search-array/and full-json-path (map symbol->string key))]
-                                                 [(has-any-key?) (field-search-array/or full-json-path (map symbol->string key))]
-                                                 [(has-pair?) (field-search-table/key+value  full-json-path (symbol->string key) (value->jsexpr value))]
-                                                 [(has-pairs?) (field-search-table/key+value/list full-json-path
-                                                                                                  (map symbol->string key)
-                                                                                                  (map value-jsexpr value))]))))]
+                                                 [(has-key?)
+                                                  (field-search-array full-json-path
+                                                                      (symbol->string key))]
+                                                 [(has-all-keys?)
+                                                  (field-search-array/and full-json-path
+                                                                          (map symbol->string key))]
+                                                 [(has-any-key?)
+                                                  (field-search-array/or full-json-path
+                                                                         (map symbol->string key))]
+                                                 [(has-pair?)
+                                                  (field-search-table/key+value
+                                                   full-json-path
+                                                   (symbol->string key)
+                                                   (value->jsexpr value))]
+                                                 [(has-pairs?)
+                                                  (field-search-table/key+value/list
+                                                   full-json-path
+                                                   (map symbol->string key)
+                                                   (map value-jsexpr value))]))))]
 
                                      [(hash)
                                       (syntax/loc (caar index-defn)
                                         (define (index-name key [value #f] [mode 'has-key?])
                                           (map id->lazy-ref
                                                (case mode
-                                                 [(has-key?) (field-search-array full-json-path (hasheq 'key (value->jsexpr key)))]
-                                                 [(has-all-keys?) (field-search-array/and full-json-path (map (λ (k) (hasheq 'key (value->jsexpr k))) key))]
-                                                 [(has-any-key?) (field-search-array/or full-json-path (map (λ (k) (hasheq 'key (value->jsexpr k))) key))]
-                                                 [(has-pair?) (field-search-table/key+value full-json-path (value->jsexpr key) (value->jsexpr value) #:symbol-table? #f)]
-                                                 [(has-pairs?) (field-search-table/key+value/list full-json-path
-                                                                                                  (map value->jsexpr key)
-                                                                                                  (map value->jsexpr  value) #:symbol-table? #f)]))))]
+                                                 [(has-key?)
+                                                  (field-search-array
+                                                   full-json-path
+                                                   (hasheq 'key (value->jsexpr key)))]
+                                                 [(has-all-keys?)
+                                                  (field-search-array/and
+                                                   full-json-path
+                                                   (map (λ (k)
+                                                          (hasheq 'key (value->jsexpr k))) key))]
+                                                 [(has-any-key?)
+                                                  (field-search-array/or
+                                                   full-json-path
+                                                   (map (λ (k)
+                                                          (hasheq 'key (value->jsexpr k))) key))]
+                                                 [(has-pair?)
+                                                  (field-search-table/key+value
+                                                   full-json-path
+                                                   (value->jsexpr key)
+                                                   (value->jsexpr value)
+                                                   #:symbol-table? #f)]
+                                                 [(has-pairs?)
+                                                  (field-search-table/key+value/list
+                                                   full-json-path
+                                                   (map value->jsexpr key)
+                                                   (map value->jsexpr  value)
+                                                   #:symbol-table? #f)]))))]
                                      [(set list vector)
                                       (syntax/loc (caar index-defn)
                                         (define (index-name key-or-keys [mode 'contains?])
                                           (map id->lazy-ref
                                                (case mode
-                                                 [(contains?) (field-search-array full-json-path (value->jsexpr key-or-keys))]
-                                                 [(contains-all?) (field-search-array/and full-json-path (map value->jsexpr key-or-keys))]
-                                                 [(contains-any?) (field-search-array/or full-json-path (map value->jsexpr key-or-keys))]))))]
+                                                 [(contains?)
+                                                  (field-search-array
+                                                   full-json-path
+                                                   (value->jsexpr key-or-keys))]
+                                                 [(contains-all?)
+                                                  (field-search-array/and
+                                                   full-json-path
+                                                   (map value->jsexpr key-or-keys))]
+                                                 [(contains-any?)
+                                                  (field-search-array/or
+                                                   full-json-path
+                                                   (map value->jsexpr key-or-keys))]))))]
                                      [else (syntax/loc (caar index-defn)
                                              (define (index-name value [operator '=])
                                                (map id->lazy-ref
-                                                    (field-search-op full-json-path operator (hash-ref (value->jsexpr value) 'value)))))]
+                                                    (field-search-op
+                                                     full-json-path
+                                                     operator
+                                                     (hash-ref (value->jsexpr value) 'value)))))]
                                    
                                      ))))))]
                          [cid cid-var])
              (syntax/loc stx
                (splicing-let ([cid (database-get-cid! 'name (relative-module-path (filepath)))])
-                 (splicing-let-values ([(local-name ...) (apply values (database-get-field-index-ids cid '(save-id ...)))])
+                 (splicing-let-values ([(local-name ...)
+                                        (apply values
+                                               (database-get-field-index-ids
+                                                cid
+                                                '(save-id ...)))])
                    create-index ...
                    define-index-search ...
                 
                    (define name
-                     (syntax-parameterize ([this/rackmud/param (syntax-id-rules () [_ (send this get-self)])])
-                       (mixin (saveable<%> from ...) (to ...)
-                         (define/override (save)
-                           (let ([result (super save)])
-                             var-save ...
-                             result))
-                         (define/override (copy-live-state)
-                           (let ([result (super copy-live-state)])
-                             var-save ...
-                             unsaved-save ...
-                             result))
-                         (define/override (load vars)
-                           var-load ...
-                           (super load vars))
-                         (define/override (load-live-state vars)
-                           var-load ...
-                           unsaved-load ...
-                           (super load-live-state vars))
-                         def-or-exp ...))))))))))
+                     (syntax-parameterize ([this/rackmud/param (syntax-id-rules ()
+                                                                 [_ (send this get-self)])])
+                       (let ([m
+                              (mixin (saveable<%> from ...) (to ...)
+                                (define/override (get-cid) cid)
+                                (define/override (get-all-cids)
+                                  (cons cid (super get-all-cids)))
+                                (define/override (save)
+                                  (let ([result (super save)])
+                                    var-save ...
+                                    result))
+                                (define/override (copy-live-state)
+                                  (let ([result (super copy-live-state)])
+                                    var-save ...
+                                    unsaved-save ...
+                                    result))
+                                (define/override (load vars)
+                                  var-load ...
+                                  (super load vars))
+                                (define/override (load-live-state vars)
+                                  var-load ...
+                                  unsaved-load ...
+                                  (super load-live-state vars))
+                                 def-or-exp ...)])
+                       (λ (%)
+                         (define new% (m %))
+                         (semaphore-wait cid-tables/semaphore)
+                         (let ([ancestors (cons name
+                                                (cons new%
+                                                      (hash-ref class-to-ancestors-table % `(,%))))])
+                           #|(for ([ancestor (in-list ancestors)])
+                             (hash-update! class-to-descendants-table ancestor
+                                           (λ (lst-of-desc)
+                                             (cons new% lst-of-desc))
+                                           null))|#
+                           (hash-set! class-to-ancestors-table new% ancestors))
+                         (semaphore-post cid-tables/semaphore)
+                         new%))))
+                   (semaphore-wait cid-tables/semaphore)
+                   (hash-set! class-to-cid-table name cid)
+                   (semaphore-post cid-tables/semaphore)
+                   )))))))
      ]))
 
-(define-for-syntax (define-saved-class/priv orig-stx who name super-expression interface-expr-list body-list)
+(define-for-syntax (define-saved-class/priv orig-stx who name super-expression interface-expr-list
+                     body-list)
   (let-values ([(wrapped-def-or-exprs saved-class-vars indexed-class-vars unsaved-class-vars)
                 (wrap-saved-class-exprs who body-list)])
     (let ([local-field-names (generate-temporaries saved-class-vars)]
@@ -1089,17 +1210,25 @@
                       [(interface-expr ...) interface-expr-list]
                       [super-expression super-expression]
                       [name name]
-                      [name/string (string-append "#<saved-object:" (symbol->string (syntax-e name)) ">")]
+                      [name/string (string-append
+                                    "#<saved-object:"
+                                    (symbol->string (syntax-e name)) ">")]
                       [(create-index ...)
                        (for/list ([(id index-defn) (in-hash indexed-class-vars)])
                          
-                         (let ([local-id-stx (hash-ref lookup-by-id id
-                                                       (λ () (raise-syntax-error 'define-saved-mixin
-                                                                                 "unknown saved field" (cadr index-defn) (caar index-defn))))])
+                         (let ([local-id-stx
+                                (hash-ref lookup-by-id id
+                                          (λ ()
+                                            (raise-syntax-error
+                                             'define-saved-mixin
+                                             "unknown saved field"
+                                             (cadr index-defn)
+                                             (caar index-defn))))])
                            (with-syntax ([id local-id-stx]
                                          [type (datum->syntax (caar index-defn) (caddr index-defn))] 
                                          [depth (datum->syntax (caar index-defn) (cdddr index-defn))])
-                             (syntax/loc (caar index-defn) (database-create-field-index id 'type depth)))))]
+                             (syntax/loc (caar index-defn)
+                               (database-create-field-index id 'type depth)))))]
                       [(define-index-search ...)
                        (for/list ([(id index-defn) (in-hash indexed-class-vars)])
                          (with-syntax ([id (hash-ref lookup-by-id id)] 
@@ -1108,7 +1237,10 @@
                                                               (syntax-e (cdar index-defn))
                                                               #:source (caar index-defn))]
                                        [value-path (let loop ([depth (cdddr index-defn)] [acc '()])
-                                                     (if (= 0 depth) acc (loop (sub1 depth) (cons "value" acc))))])
+                                                     (if (= 0 depth)
+                                                         acc
+                                                         (loop (sub1 depth)
+                                                               (cons "value" acc))))])
                            (quasisyntax/loc (caar index-defn)
                              (splicing-let ([full-json-path (cons (symbol->string id) 'value-path)])
                                (unsyntax
@@ -1117,63 +1249,115 @@
                                    (syntax/loc (caar index-defn)
                                      (define (index-name value [operator '=])
                                        (map id->lazy-ref
-                                            (field-search-op full-json-path operator (value->jsexpr value)))))]
+                                            (field-search-op full-json-path operator
+                                                             (value->jsexpr value)))))]
                                   [(symbol-table)
                                    (syntax/loc (caar index-defn)
                                      (define (index-name key [value #f] [mode 'has-key?])
                                        (map id->lazy-ref
                                             (case mode
-                                              [(has-key?) (field-search-array full-json-path (symbol->string key))]
-                                              [(has-all-keys?) (field-search-array/and full-json-path (map symbol->string key))]
-                                              [(has-any-key?) (field-search-array/or full-json-path (map symbol->string key))]
-                                              [(has-pair?) (field-search-table/key+value  full-json-path (symbol->string key) (value->jsexpr value))]
-                                              [(has-pairs?) (field-search-table/key+value/list full-json-path
-                                                                                               (map symbol->string key)
-                                                                                               (map value-jsexpr value))]))))]
+                                              [(has-key?)
+                                               (field-search-array full-json-path
+                                                                   (symbol->string key))]
+                                              [(has-all-keys?)
+                                               (field-search-array/and
+                                                full-json-path
+                                                (map symbol->string key))]
+                                              [(has-any-key?)
+                                               (field-search-array/or
+                                                full-json-path
+                                                (map symbol->string key))]
+                                              [(has-pair?)
+                                               (field-search-table/key+value
+                                                full-json-path
+                                                (symbol->string key)
+                                                (value->jsexpr value))]
+                                              [(has-pairs?)
+                                               (field-search-table/key+value/list
+                                                full-json-path
+                                                (map symbol->string key)
+                                                (map value-jsexpr value))]))))]
 
                                   [(hash)
                                    (syntax/loc (caar index-defn)
                                      (define (index-name key [value #f] [mode 'has-key?])
                                        (map id->lazy-ref
                                             (case mode
-                                              [(has-key?) (field-search-array full-json-path (hasheq 'key (value->jsexpr key)))]
-                                              [(has-all-keys?) (field-search-array/and full-json-path (map (λ (k) (hasheq 'key (value->jsexpr k))) key))]
-                                              [(has-any-key?) (field-search-array/or full-json-path (map (λ (k) (hasheq 'key (value->jsexpr k))) key))]
-                                              [(has-pair?) (field-search-table/key+value full-json-path (value->jsexpr key) (value->jsexpr value) #:symbol-table? #f)]
-                                              [(has-pairs?) (field-search-table/key+value/list full-json-path
-                                                                                               (map value->jsexpr key)
-                                                                                               (map value->jsexpr  value) #:symbol-table? #f)]))))]
+                                              [(has-key?)
+                                               (field-search-array
+                                                full-json-path
+                                                (hasheq 'key (value->jsexpr key)))]
+                                              [(has-all-keys?)
+                                               (field-search-array/and
+                                                full-json-path
+                                                (map (λ (k)
+                                                       (hasheq 'key (value->jsexpr k)))
+                                                     key))]
+                                              [(has-any-key?)
+                                               (field-search-array/or
+                                                full-json-path
+                                                (map (λ (k)
+                                                       (hasheq 'key (value->jsexpr k)))
+                                                     key))]
+                                              [(has-pair?)
+                                               (field-search-table/key+value
+                                                full-json-path
+                                                (value->jsexpr key)
+                                                (value->jsexpr value)
+                                                #:symbol-table? #f)]
+                                              [(has-pairs?)
+                                               (field-search-table/key+value/list
+                                                full-json-path
+                                                (map value->jsexpr key)
+                                                (map value->jsexpr value)
+                                                #:symbol-table? #f)]))))]
                                   [(set list vector)
                                    (syntax/loc (caar index-defn)
                                      (define (index-name key-or-keys [mode 'contains?])
                                        (map id->lazy-ref
                                             (case mode
-                                              [(contains?) (field-search-array full-json-path (value->jsexpr key-or-keys))]
-                                              [(contains-all?) (field-search-array/and full-json-path (map value->jsexpr key-or-keys))]
-                                              [(contains-any?) (field-search-array/or full-json-path (map value->jsexpr key-or-keys))]))))]
+                                              [(contains?)
+                                               (field-search-array
+                                                full-json-path
+                                                (value->jsexpr key-or-keys))]
+                                              [(contains-all?)
+                                               (field-search-array/and
+                                                full-json-path
+                                                (map value->jsexpr key-or-keys))]
+                                              [(contains-any?)
+                                               (field-search-array/or
+                                                full-json-path
+                                                (map value->jsexpr key-or-keys))]))))]
                                   [else (syntax/loc (caar index-defn)
                                           (define (index-name value [operator '=])
                                             (map id->lazy-ref
-                                                 (field-search-op full-json-path operator (hash-ref (value->jsexpr value) 'value)))))]
-                                   
+                                                 (field-search-op
+                                                  full-json-path
+                                                  operator
+                                                  (hash-ref (value->jsexpr value) 'value)))))]
                                   ))))))]
-                      
                       [cid cid-var])
           (syntax/loc orig-stx
-            (splicing-let ([cid (database-get-cid! 'name (relative-module-path (filepath)))])
-              (splicing-let-values ([(local-name ...) (apply values (database-get-field-index-ids cid '(save-id ...)))])
+            (splicing-let ([cid (database-get-cid! 'name (relative-module-path (filepath)))]
+                           [se super-expression])
+              (unless
+                  (subclass? se saved-object%)
+                (raise-argument-error 'define-saved-class "(subclass?/c saved-object%)" se))
+              (splicing-let-values ([(local-name ...)
+                                     (apply values
+                                            (database-get-field-index-ids cid '(save-id ...)))])
                 create-index ...
                 define-index-search ...
                 (provide name)
                 (define name
-                  (syntax-parameterize ([this/rackmud/param (syntax-id-rules () [_ (send this get-self)])])
+                  (syntax-parameterize ([this/rackmud/param
+                                         (syntax-id-rules () [_ (send this get-self)])])
 
-                    (class* (let ([se super-expression])
-                              (if (subclass? se saved-object%)
-                                  se
-                                  (raise-argument-error 'define-saved-class "(subclass?/c saved-object%)" se)))
+                    (class* se
                       (interface-expr ...)
                       (define/override (get-cid) cid)
+                      (define/override (get-all-cids)
+                        (cons cid (super get-all-cids)))
                       (define/override (save)
                         (let ([result (super save)])
                           var-save ...
@@ -1192,7 +1376,24 @@
                         (super load-live-state vars))
                       
                       def-or-exp ...)))
+                (semaphore-wait cid-tables/semaphore)
                 (hash-set! class-to-cid-table name cid)
+                (let* ([ancestors (cons name (hash-ref class-to-ancestors-table se `(,se)))]
+                       [ancestors/cid (filter (λ (x) x)
+                                                (map (λ (%)
+                                                       (hash-ref class-to-cid-table % #f))
+                                                     ancestors))])
+                  
+#|                  (for ([ancestor (in-list ancestors)])
+                    (hash-update! class-to-descendants-table ancestor
+                                  (λ (lst-of-desc)
+                                    (cons name lst-of-desc))
+                                  null))|#
+                  
+                  (database-update-class-hierarchy cid ancestors/cid)
+                  
+                  (hash-set! class-to-ancestors-table name ancestors))
+                (semaphore-post cid-tables/semaphore)
                 ))))))))
 
 
@@ -1238,7 +1439,7 @@
 
 (define (save-all-objects)
   (semaphore-wait object-table/semaphore)
-  (displayln "Starting save transaction...")
+  ;(displayln "Starting save transaction...")
   (database-start-transaction!)
   (with-handlers ([exn? (λ (e)
                           (eprintf "Save failed, error incoming ~a\n" e)
@@ -1248,10 +1449,24 @@
       (when oid
         (let ([o (weak-box-value (object-record-obj obj))])
           (when o (save-object (unbox o)))))))
-  (database-commit-transaction!)
-  (displayln "Save transaction committed")
   (semaphore-post object-table/semaphore)
-  (sleep 1))
+
+  #|(semaphore-wait cid-tables/semaphore)
+  (for ([(% lst-of-desc) (in-hash class-to-descendants-table)])
+    (let* ([cid (hash-ref class-to-cid-table % #f)]
+           [lst-of-desc/cid (filter (λ (x) x)
+                                   (map (λ (%)
+                                          (hash-ref class-to-cid-table % #f))
+                                   lst-of-desc))]
+           [lst-of-ansc/cid (filter (λ (x) x)
+                                    (map (λ (%)
+                                            (hash-ref class-to-cid-table % #f))
+                                         (hash-ref class-to-ancestors-table % (λ () (list %)))))])
+      (when cid (database-update-class-hierarchy cid lst-of-desc/cid lst-of-ansc/cid))))
+  (semaphore-post cid-tables/semaphore)|#
+  (database-commit-transaction!)
+  ;(displayln "Save transaction committed")
+  )
 
 
 (define (database-setup db-type db-port db-sock db-srv db-db db-user db-pass)
@@ -1280,16 +1495,7 @@
   (if cid
       (let ([fields (jsexpr->value fields/json)]
             [new-object (new (load-class cid) [id id])])
-        
-        ;;; TODO:  This should recompile the changed files, get the timestamps from the changed files, and
-        ;;         updated all of their cid's with the timestamp
-        ;;; TODO (future): Somewhere in the system is a thread that looks for instances where saved < cid.saved, and does a save ->
-        ;;         reload to them
-        ;; (when (cons? changes) (eprintf "~v\n" changes))
-        
-        
         (send new-object load fields)
-        
         (set-field! created new-object created)
         (set-field! saved new-object saved)
         (send new-object on-load)
@@ -1316,7 +1522,9 @@
   (syntax-case stx()
     [(_ cls (_id arg) ...)
      #'(let ([c cls])
-         (unless (subclass? c saved-object%) (raise-argument-error 'get-singleton "(subclass?/c saved-object%)" c))
+         (unless (subclass? c saved-object%) (raise-argument-error
+                                              'get-singleton
+                                              "(subclass?/c saved-object%)" c))
          (let* ([cid (hash-ref class-to-cid-table c #f)]
                 [oid (and cid (database-get-singleton cid))])
            (if cid
@@ -1329,6 +1537,18 @@
                (error 'get-singleton "could not find class identifier for class ~v" c))))]))
 
 
+(define (find-objects-by-class % #:include-ancestor? [include-ancestor? #f])
+  (semaphore-wait cid-tables/semaphore)
+  (define cid (hash-ref class-to-cid-table % #f))
+  (semaphore-post cid-tables/semaphore)
+  (define oids
+    (if include-ancestor?
+        (database-find-objects-by-ancestor-class cid)
+        (database-find-objects-by-class cid)))
+  (map (λ (oid)
+         (lazy-ref oid #f))
+       oids))
+
 
 
 (define (get-rackmud-logs #:subjects [subjects #f]
@@ -1337,7 +1557,8 @@
                           #:date-end [date-end #f]
                           #:limit [limit #f] #:offset [offset #f] #:text-search [text-search #f]
                           #:asc? [asc? #f])
-  (database-get-logs (and levels (map log-level->int levels)) subjects date-start date-end text-search limit offset asc?))
+  (database-get-logs (and levels (map log-level->int levels))
+                     subjects date-start date-end text-search limit offset asc?))
 
 (define (get-rackmud-log-counts #:subjects [subjects #f] #:levels [levels #f]
                                 #:date-start [date-start #f] #:date-end [date-end #f]

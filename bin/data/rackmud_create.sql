@@ -1,11 +1,13 @@
 CREATE TABLE classes (
 	cid SERIAL UNIQUE NOT NULL,
+    ancestors INT[] NOT NULL DEFAULT '{}'::int[],
 	classname TEXT NOT NULL,
 	module TEXT NOT NULL,
 	PRIMARY KEY (cid)
 );
 
 CREATE UNIQUE INDEX classes_lookup ON classes (module, classname);
+CREATE INDEX classes_ancestors ON classes USING GIN(ancestors gin__int_ops);
 
 CREATE OR REPLACE FUNCTION get_cid(TEXT, TEXT) RETURNS INT AS
 $$
@@ -24,12 +26,15 @@ LANGUAGE plpgsql;
 CREATE TABLE objects (
 	oid BIGSERIAL UNIQUE NOT NULL,
 	cid INT NOT NULL REFERENCES classes,
+--    all_cids INT NOT NULL DEFAULT '{}',
 	created TIMESTAMPTZ NOT NULL DEFAULT now(),
 	saved TIMESTAMPTZ,
 	PRIMARY KEY (oid)
 );
 
 CREATE INDEX objects_by_ver ON objects (saved);
+CREATE INDEX objects_by_class ON objects (cid);
+--CREATE INDEX objects_by_ancestor ON objects USING GIN("all_cids");
 
 CREATE TABLE field_index_names (
 	fid SERIAL UNIQUE NOT NULL,

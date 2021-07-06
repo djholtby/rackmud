@@ -23,6 +23,9 @@
          field-search-table/key+value/list
          database-start-transaction!
          database-commit-transaction!
+         database-update-class-hierarchy
+         database-find-objects-by-ancestor-class
+         database-find-objects-by-class
          )
 
 (define (make-rackmud-db-pool db-port db-sock db-srv db-db db-user db-pass)
@@ -89,7 +92,21 @@
   (virtual-statement
    "SELECT classname, module FROM classes WHERE cid = $1"))
 
-                              
+
+(define hierarchy-update-stmt
+  (virtual-statement
+   "UPDATE classes SET ancestors = ancestors | $1 WHERE cid = $2"))
+
+(define find-object-by-ancestor-class-stmt
+  (virtual-statement
+   (string-append
+   "SELECT oid FROM objects INNER JOIN classes ON (objects.cid = classes.cid) WHERE "
+   "$1::int[] <@ ancestors")))
+
+(define find-object-by-class-stmt
+  (virtual-statement
+   "SELECT oid FROM objects WHERE cid = $1"))
+
 (define get-classid-stmt
   (virtual-statement
    "SELECT get_cid($1, $2) as cid"))
@@ -714,3 +731,14 @@ database-get-cid! : Symbol Path -> Nat
 
         (define (database-get-log-topics)
           (query-list _dbc_ log-topic-query))
+
+
+
+(define (database-update-class-hierarchy cid lst-of-ansc)
+  (query-exec _dbc_ hierarchy-update-stmt lst-of-ansc cid))
+
+(define (database-find-objects-by-ancestor-class cid)
+  (query-list _dbc_ find-object-by-ancestor-class-stmt (list cid)))
+
+(define (database-find-objects-by-class cid)
+  (query-list _dbc_ find-object-by-class-stmt cid))

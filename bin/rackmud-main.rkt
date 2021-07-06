@@ -441,8 +441,8 @@
       (displayln "Telnet and REPL stopped...")
       (shut-down!))     
 
-
-    
+    (displayln "Running")
+    (sleep 0.01)
     ;; Finally, if running in interactive mode, start the REPL thread
 
     (define repl-thread
@@ -466,16 +466,16 @@
               (parameterize ([current-namespace ns])
                 (namespace-set-variable-value! 'shutdown! shutdown!)
                 (namespace-set-variable-value! 'rebuild! rebuild!)
-                (namespace-set-variable-value! 'exit shutdown!)
+                (namespace-set-variable-value! 'exit shutdown!) ; override default exit
                 (let loop () 
-                  (read-eval-print-loop)
-                  (cond[(in-tmux?)
-                        (displayln "ETATCH")
+                  (read-eval-print-loop) 
+                  ;; runs if EOF breaks out of REPL
+                  (cond[(in-tmux?) 
+                        (displayln "ETATCH") ; ctrl-d shows as ^D,so now they see ^DETACH in history
                         (system "tmux detach")]
                        [else (displayln "")])
                   (loop)))))))
-  
-    (displayln "Running")
+
     (capture-signal! 'SIGTERM)
     (with-handlers ([exn:break?
                      (lambda (e)
