@@ -1,6 +1,7 @@
 #lang racket/base
 
-(require racket/class racket/port racket/bytes racket/list racket/match racket/string racket/set json net/rfc6455)
+(require racket/class racket/port racket/bytes racket/list racket/match racket/string racket/set json
+         net/rfc6455 xml)
 (require telnet/connection telnet/mxp)
 
 (provide websock-terminal%)
@@ -39,7 +40,12 @@
        (lambda ()
          (let loop ()
            (define msg
-             (with-handlers ([exn? (λ (e) (eprintf "~v\n" e) eof)])
+             (with-handlers ([exn? (λ (e)
+                                     (log-message (current-logger)
+                                                  'error 'rackmud:websock
+                                                  (exn-message e)
+                                                  (exn-continuation-marks e) #f)
+                                     eof)])
                (ws-recv websock-connection #:payload-type 'text)))
            (if (eof-object? msg)
                (begin
@@ -48,8 +54,10 @@
                (let* ([msg/json (string->jsexpr (if (bytes? msg) (bytes->string/utf-8 msg) msg))]
                       [msg-type (hash-ref msg/json 'type "")])
                  (case (string->symbol msg-type)
-                   [(text) (receive (hash-ref msg/json 'payload))]
-                   [(gmcp) (receive (list 'gmcp (hash-ref msg/json 'package) (hash-ref msg/json 'payload #f)))]
+                   [(text) (receive (hash-ref msg/json 'text))]
+                   [(gmcp) (receive (list 'gmcp
+                                          (hash-ref msg/json 'package)
+                                          (hash-ref msg/json 'payload #f)))]
                    [(naws)
                     (let ([width (hash-ref msg/json 'width)]
                           [height (hash-ref msg/json 'height)])
@@ -66,18 +74,34 @@
            (ws-close! websock-connection #:reason "Connection closed by server")
            (receive eof)
            (kill-thread connection-thread)]
-          [(? string?) (ws-send! websock-connection (jsexpr->string `#hasheq((type . "text") (text . ,msg))))]
-          [(? bytes?) (ws-send! websock-connection (jsexpr->string `#hasheq((type . "text") (text . ,(bytes->string/utf-8 msg)))))]
+          [(? string?) (ws-send! websock-connection
+                                 (jsexpr->string `#hasheq((type . "text")
+                                                          (text . ,(xexpr->string msg)))))]
+          [(? bytes?) (ws-send! websock-connection
+                                (jsexpr->string `#hasheq((type . "text")
+                                                         (text . ,(xexpr->string
+                                                                   (bytes->string/utf-8 msg))))))]
           ['nop
            (ws-send! websock-connection "null")]
           [(? symbol?)
-           (ws-send! websock-connection (jsexpr->string `#hasheq((type . "command") (command . ,(symbol->string msg)))))]
+           (ws-send! websock-connection (jsexpr->string
+                                         `#hasheq((type . "command")
+                                                  (command . ,(symbol->string msg)))))]
           [(list 'text contents ...)
-           (ws-send! websock-connection (jsexpr->string `#hasheq((type . "markup") (text . ,(xexpr->string/settings msg markup-settings)))))]
+           (ws-send! websock-connection (jsexpr->string
+                                         `#hasheq((type . "markup")
+                                                  (text . ,(xexpr->string/settings
+                                                            msg markup-settings)))))]
           [(list 'gmcp package payload)
-           (ws-send! websock-connection (jsexpr->string `#hasheq((type . "gmcp") (package . ,(symbol->string package)) (payload . ,payload))))]
+           (ws-send! websock-connection (jsexpr->string
+                                         `#hasheq((type . "gmcp")
+                                                  (package . ,(symbol->string package))
+                                                  (payload . ,payload))))]
           [(list 'gmcp package)
-           (ws-send! websock-connection (jsexpr->string `#hasheq((type . "gmcp") (package . ,(symbol->string package)) (payload . #f))))])))))
+           (ws-send! websock-connection (jsexpr->string
+                                         `#hasheq((type . "gmcp")
+                                                  (package . ,(symbol->string package))
+                                                  (payload . #f))))])))))
 
     
 

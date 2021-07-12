@@ -84,6 +84,7 @@
 (define rackmud-log-rec
   (make-log-receiver (current-logger)
                      'debug 'compiler-place
+                     'debug 'rackmud:servlet
                      'debug 'rackmud:auth
                      'debug 'rackmud
                      'info 'grapevine
@@ -234,7 +235,11 @@
                            (,mssp-manager%)
                            (,ttype-manager%)
                            (,charset-manager% telnet-encodings telnet-charset-seq))]))
-      ;    (eprintf "adding new user from ~v" ip)
+      (log-message (current-logger) 'debug 'rackmud
+                   (format "~atelnet login from ~v"
+                           (if secure? "ssl-" "")
+                           ip)
+                   #f #f)
       (send* conn
         (enable-telopt telopt:mxp 'local)
         (enable-telopt telopt:compress2 'local)
@@ -255,8 +260,12 @@
                      (let loop ()
                        (with-handlers ([exn?
                                         (lambda (e)
-                                          (database-log 'error "Telnet-Listener" (exn-message e)
-                                                        (backtrace (exn-continuation-marks e))))])
+                                          (log-message (current-logger)
+                                                       'error 'rackmud:telnet
+                                                       (exn-message e)
+                                                       (exn-continuation-marks e)
+                                                       #f)
+                                          (loop))])
                          (define-values (in out) (tcp-accept telnet-serv))
                          (define-values (lip ip) (tcp-addresses in))
                          (add-telnet-user in out ip))
@@ -275,9 +284,12 @@
                      (let loop ()
                        (with-handlers ([exn?
                                         (lambda (e)
-                                          (database-log 'error "SSL-Telnet-Listener"
-                                                        (exn-message e)
-                                                        (backtrace (exn-continuation-marks e))))])
+                                          (log-message (current-logger)
+                                                       'error 'rackmud:telnet
+                                                       (exn-message e)
+                                                       (exn-continuation-marks e)
+                                                       #f)
+                                          (loop))])
                          (define-values (in out) (tcp-accept ssl-serv))
                          (define-values (lip ip) (tcp-addresses in))
                          (define-values (sin sout) (ports->ssl-ports in out

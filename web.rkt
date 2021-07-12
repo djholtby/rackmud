@@ -35,7 +35,8 @@
 
 (provide logout-cookies request->authorized-object object->auth-cookies define-authorized-responder
          response/text web-root-path get-auth-cookies
-         webserver-absolute-path servlet-path)
+         webserver-absolute-path servlet-path
+         websock-path websock-client-path)
 
 (define (simplify-path/param pp-lst)
   (filter (λ (pp) (positive? (string-length (path/param-path pp)))) pp-lst))
@@ -94,7 +95,27 @@
                                  (bytes->path
                                   (string->bytes/utf-8 (rackmud:servlet-path)) 'unix))
                               ,@path-parts)))))
-  
+
+(define (websock-path . path-parts)
+  (some-system-path->string
+   (apply
+    build-path/convention-type 'unix 
+    (map ->web-path-element `(,@(explode-path
+                                 (bytes->path (string->bytes/utf-8
+                                               (rackmud:web-root-path))
+                                              'unix))
+                              ,@(explode-path
+                                 (bytes->path
+                                  (string->bytes/utf-8 (rackmud:websock-path)) 'unix))
+                              ,@path-parts)))))
+
+(define (websock-client-path)
+  (websock-path (rackmud:websock-client-path)))
+
+;;(define rackmud:websock-path (make-parameter #f))
+;;(define rackmud:websock-client-path (make-parameter #f))
+
+
 (define jwt-cookie-name "rackmud-auth")
 (define refresh-cookie-name "rackmud-token")
 (define TEXT/PLAIN-MIME-TYPE #"text/plain; charset=utf-8")

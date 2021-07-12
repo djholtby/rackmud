@@ -21,8 +21,7 @@
          racket/unit
          (only-in racket/tcp listen-port-number?)
          (for-syntax racket/base)
-         racket/unix-socket
-         "socket-unit.rkt")
+         racket/unix-socket racket/unix-socket-tcp-unit)
 
 
 
@@ -292,7 +291,7 @@
        #:dispatch dispatcher
        #:confirmation-channel confirmation-channel
        #:connection-close? connection-close?
-       #:tcp@ (tcp-unix-socket@ socket-path)
+       #:tcp@ (make-unix-socket-tcp@ socket-path)
        #:max-waiting max-waiting)]
      [(and ssl? http? force-ssl?)
       (let ([shutdown-http
