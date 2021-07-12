@@ -48,7 +48,7 @@
   (cond [(<= time (inexact->exact (round (current-inexact-milliseconds))))
          (sync-enqueue! (event-scheduler-pending sched) wrapped-event)]
         [(>= time (or (event-scheduler-next-event sched) +inf.0))
-         (pq-add! (event-scheduler-pq sched) wrapped-event)]
+         (pq-add! (event-scheduler-pq sched) time wrapped-event)]
         [else
          (pq-add! (event-scheduler-pq sched) time wrapped-event)
          (set-event-scheduler-next-event! sched time)
