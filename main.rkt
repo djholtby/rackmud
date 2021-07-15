@@ -29,6 +29,7 @@
          "lib-path.rkt"
          "connections.rkt"
          "parameters.rkt"
+         "websock-tags.rkt"
          )
 
 (provide
@@ -83,6 +84,7 @@
  (all-from-out "scheduler.rkt")
  (all-from-out "logger.rkt")
  (all-from-out "connections.rkt")
+ (all-from-out "websock-tags.rkt")
 
  ;; from lib-path.rkt
  set-lib-path!
