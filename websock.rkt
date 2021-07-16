@@ -65,7 +65,9 @@
                           [height (hash-ref msg/json 'height)])
                       (set-dimensions! width height)
                       (receive (list 'naws width height)))]
-                   [else (void)])
+                   [else (log-message (current-logger)
+                                      'debug 'rackmud:websock
+                                      (format "unhandled websocket message: ~v" msg/json) #f #f)])
                  (loop)))))))
                                       
     
@@ -91,7 +93,9 @@
                                                 (text . ,(xexpr->string
                                                           (bytes->string/utf-8 msg))))))]
                 ['nop
-                 (ws-send! websock-connection "null")]
+                 (ws-send! websock-connection
+                           (jsexpr->string
+                            '#hasheq((type . "command") (command . "ping"))))]
                 [(? symbol?)
                  (ws-send! websock-connection (jsexpr->string
                                                `#hasheq((type . "command")
