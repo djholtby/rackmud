@@ -87,6 +87,7 @@
                      'debug 'rackmud:servlet
                      'debug 'rackmud:auth
                      'debug 'rackmud
+                     'debug 'telnet
                      'info 'grapevine
                      'warning)) ; default level to log
 
@@ -330,7 +331,10 @@
                    (new
                     custom-websock%
                     [websock-connection ws-conn]
-                    [secure? (eqv? (request-host-port req) https-port)]
+                    [secure? (or
+                              (rackmud:proxy-mode)
+                              (and (string? (url-scheme (request-uri req)))
+                                   (string=? "wss" (url-scheme (request-uri req)))))]
                     [ip (request-client-ip req)]
                     [preauthorized (request+object-authorized-object req)]
                     ))
