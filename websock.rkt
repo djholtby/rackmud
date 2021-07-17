@@ -13,13 +13,14 @@
 (define websock-terminal%
   (class* terminal% (terminal<%>)
     (super-new)
-    (init-field websock-connection)
+    (init [(websock-connection/init websock-connection)])
+    (define websock-connection websock-connection/init)
 
     (define/override (connected?)
       (not (ws-conn-closed? websock-connection)))
 
-    (inherit receive)
-    (inherit-field markup-settings)
+    (inherit receive get-markup-settings)
+    
     
     (define terminal-dimensions '(80 . 24))
     (define/override (dimensions)
@@ -37,6 +38,18 @@
     (define/override (supports? option)
       (memq option '(gmcp html)))
 
+    (define (send-settings)
+      (ws-send! websock-connection (jsexpr->string
+                                    `#hasheq((type . "style")
+                                             (style . ,(settings->CSS (get-markup-settings)))))))
+
+    (define/override (set-markup-settings! settings)
+      (super set-markup-settings! settings)
+      (send-settings))
+    (define/override (markup-settings-union! settings)
+      (super markup-settings-union! settings)
+      (send-settings))
+    
     (define connection-thread
       (thread
        (lambda ()
@@ -99,9 +112,9 @@
                 [(? symbol?)
                  (ws-send! websock-connection (jsexpr->string
                                                `#hasheq((type . "command")
-                                                        (command . ,(symbol->string msg)))))]
+                                                        (command . ,(symbol->string msg)))))]                
                 [(list 'text contents ...)
-                 (parameterize ([tag-settings markup-settings])
+                 (parameterize ([tag-settings (get-markup-settings)])
                    (ws-send! websock-connection (jsexpr->string
                                                  `#hasheq((type . "markup")
                                                           (text . ,(xexpr->string/settings msg))))))]

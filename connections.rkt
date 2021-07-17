@@ -22,12 +22,6 @@
   (mixin (terminal<%>) (outer-connection<%>)
     (super-new)
     (inherit supports? transmit)
-    (inherit-field markup-settings)
-    ;(will-register object-executor this (λ (o) (eprintf "CONN DESTROYED\n")))
-
-    ; TODO: move this to on-connect
-    ;(hash-union! markup-settings (send master-object get-server-markup-settings))
-    
     (init [inner-connection #f])
     (init [preauthorized #f])
 
