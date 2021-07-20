@@ -54,8 +54,11 @@
            #t]
           [else #t]))
       (when (and pass-on? ic (send/rackmud ic connected?))
-        (with-handlers ([exn? (λ (e) (log-message (current-logger) 'error (exn-message e)
-                                                  (backtrace e)))])
+        (with-handlers ([exn? (λ (e) (log-message (current-logger)
+                                                  'error
+                                                  (exn-message e)
+                                                  (exn-continuation-marks e)
+                                                  #f))])
           (send/rackmud ic receive message))
         ))
 
