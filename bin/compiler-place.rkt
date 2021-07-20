@@ -1,6 +1,7 @@
 #lang racket/base
 
-(require compiler/compiler compiler/option racket/place racket/set racket/exn)
+(require compiler/compiler compiler/option compiler/cm racket/place racket/set racket/exn
+         racket/file racket/path)
 
 (provide compiler-place-main)
 
@@ -8,54 +9,44 @@
   (define mudlib/path (place-channel-get p-chan))
   (define mudlib-collect (place-channel-get p-chan))
   (define initial-build? (place-channel-get p-chan))
-  
+  (define changes (box '()))
+  (define recompiled? (box #f))
   (parameterize ([current-library-collection-paths (if mudlib/path
-                                                       (cons  mudlib/path (current-library-collection-paths))
+                                                       (cons  mudlib/path
+                                                              (current-library-collection-paths))
                                                        (current-library-collection-paths))]
+                 [compile-notify-handler (λ (file-being-compiled)
+                                           (printf "  compiling ~a\n"
+                                                   (path->string file-being-compiled))
+                                           (set-box! changes (cons file-being-compiled
+                                                                   (unbox changes)))
+                                           (set-box! recompiled? #t))]
                  [compile-enforce-module-constants #f])
     (define failed? #f)
-    (define mudlib-collect-regexp
-      (regexp (format "^\\s*checking: (~a.*)$" (regexp-quote (path->string (collection-path (symbol->string mudlib-collect)))))))
-    (define changes (box '()))
-    (define filtered-output-port
-      (let ([o (current-output-port)])
-        (make-output-port 'filtered-out
-                          o
-                          (λ (bs start end non-blocking? enable-breaks?)
-                            (define m (regexp-match #px"^\\s*compiling (.*)$"
-                                                    (subbytes bs start end)))
-                            (when m
-                              (write-bytes bs o start end)
-                              (displayln "" o)
-                              (set-box! changes (cons (cadr m) (unbox changes))))
-                            (- end start))
-                          (λ () (close-output-port o)))))
+    
+    (define (do-compilation)
+      (displayln "Compiling mudlib")
+      (with-handlers ([exn? (λ (e)
+                              (place-channel-put p-chan (exn->string e)))])
+
+        (compile-directory-zos (collection-path (symbol->string mudlib-collect))
+                               (λ (name thunk)
+                                 (if (eq? name 'name) (symbol->string mudlib-collect) (thunk)))
+                               #:verbose #f
+                               #:skip-doc-sources? #t))
+      (displayln "Compilation completed"))
 
     (when initial-build?
-      (displayln "Compiling mudlib")
-      (parameterize ([current-output-port filtered-output-port])
-        (with-handlers ([exn? (λ (e)
-                                (place-channel-put p-chan (exn->string e)))])
-          (compile-directory-zos (collection-path (symbol->string mudlib-collect))
-                                 (λ (name thunk)
-                                   (if (eq? name 'name) (symbol->string mudlib-collect) (thunk)))
-                                 #:verbose #t
-                                 #:skip-doc-sources? #t))))
+      (do-compilation))
+      
+      
     (unless failed?
       (place-channel-put p-chan #t)
     
       (let loop ()
         (set-box! changes '()) 
         (sync p-chan)
-        (with-handlers ([exn? (λ (e)
-                                (place-channel-put p-chan (exn-message e))
-                                (loop))])
-          (parameterize ([current-output-port filtered-output-port])
-            (compile-directory-zos (collection-path (symbol->string mudlib-collect))
-                                   (λ (name thunk)
-                                     (if (eq? name 'name) (symbol->string mudlib-collect) (thunk)))
-                                   #:verbose #t
-                                   #:skip-doc-sources? #t)))
+        (do-compilation)
         (place-channel-put p-chan (map bytes->path (unbox changes)))
         (loop)))))
 
