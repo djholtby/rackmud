@@ -10,7 +10,6 @@
   (define mudlib-collect (place-channel-get p-chan))
   (define initial-build? (place-channel-get p-chan))
   (define changes (box '()))
-  (define recompiled? (box #f))
   (parameterize ([current-library-collection-paths (if mudlib/path
                                                        (cons  mudlib/path
                                                               (current-library-collection-paths))
@@ -19,8 +18,7 @@
                                            (printf "  compiling ~a\n"
                                                    (path->string file-being-compiled))
                                            (set-box! changes (cons file-being-compiled
-                                                                   (unbox changes)))
-                                           (set-box! recompiled? #t))]
+                                                                   (unbox changes))))]
                  [compile-enforce-module-constants #f])
     (define failed? #f)
     
