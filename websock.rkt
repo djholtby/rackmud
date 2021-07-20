@@ -68,6 +68,10 @@
                  (ws-close! websock-connection))
                (let* ([msg/json (string->jsexpr (if (bytes? msg) (bytes->string/utf-8 msg) msg))]
                       [msg-type (hash-ref msg/json 'type "")])
+                 (with-handlers ([exn? (λ (e)
+                                         (log-message (current-logger) 'error #f
+                                                      (exn-message e)
+                                                      (exn-continuation-marks e) #f))])
                  (case (string->symbol msg-type)
                    [(text) (receive (hash-ref msg/json 'text))]
                    [(gmcp) (receive (list 'gmcp
@@ -80,7 +84,7 @@
                       (receive (list 'naws width height)))]
                    [else (log-message (current-logger)
                                       'debug 'rackmud:websock
-                                      (format "unhandled websocket message: ~v" msg/json) #f #f)])
+                                      (format "unhandled websocket message: ~v" msg/json) #f #f)]))
                  (loop)))))))
                                       
     
