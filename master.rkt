@@ -39,7 +39,8 @@ The connection manager will send a telnet-object to it whenever a user connects.
 (define (event-handler)
   (define event (sync scheduler))
   (with-handlers ([exn:break? void]
-                  [(λ (e) #t) (λ (e) ((error-display-handler) (string-append "event exception - " (exn-message e)) e))])
+                  [exn? (λ(e) (log-message (current-logger) 'error #f (exn-message e) (exn-continuation-marks e) #f))]
+                  [(λ (e) #t) (λ (e) (log-message (current-logger) 'error #f (format "event exception - ~v"  e) #f #f))])
     (when event (event)))
   (event-handler))
 
