@@ -124,7 +124,7 @@ The connection manager will send a telnet-object to it whenever a user connects.
   (scheduler-start! scheduler))
 
 (define (load-master-object! resolved-mudlib-path master-class)
-  (define paths (dynamic-rerequire resolved-mudlib-path))
+  (define paths (dynamic-rerequire resolved-mudlib-path #:verbosity 'none))
   (define % (dynamic-require resolved-mudlib-path master-class))
   (unless (implementation? % master<%>)
     (raise-argument-error 'load-master-object! "(implementation?/c master<%>" %))

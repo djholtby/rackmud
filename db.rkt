@@ -349,7 +349,7 @@ database-get-cid! : Symbol Path -> Nat
          [changes (dynamic-rerequire classfile/resolved #:verbosity 'none)]
          ;; TODO: Mark changed mudlib source files
          [% (dynamic-require classfile/resolved classname)])
-    ;(mark-needed-reloads changes)
+    ;(log-message (current-logger) 'debug 'rackmud (format "reloaded modules - ~v" changes) #f #f)
     %))
 
 (define (simplify-name s)
