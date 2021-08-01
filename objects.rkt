@@ -26,7 +26,8 @@
          class-field-accessor/rackmud class-field-mutator/rackmud this/rackmud
          get-authorization make-authorization get-all-auth-tokens expire-auth-token
          expire-all-auth-tokens expire-auth-token-and-jwt find-objects-by-class
-         get-rackmud-logs get-rackmud-log-topics get-rackmud-log-counts)
+         get-rackmud-logs get-rackmud-log-topics get-rackmud-log-counts start-object-reload-thread!
+         start-executor! stop-object-reload-thread! stop-executor!)
 
 
 (define class-dep-sema (make-semaphore 1))
@@ -318,11 +319,17 @@
 
 
 (define object-executor (make-will-executor))
-(define executor-thread
-  (thread (λ()
-            (let loop ()
-              (will-execute object-executor)
-              (loop)))))
+(define executor-thread #f)
+(define (start-executor!)
+  (set! executor-thread
+        (thread (λ()
+                  (let loop ()
+                    (will-execute object-executor)
+                    (loop))))))
+
+(define (stop-executor!)
+  (kill-thread executor-thread)
+  (set! executor-thread #f))
 
 
 
@@ -346,7 +353,7 @@
   (semaphore-wait object-table/semaphore)
   (begin0
     (foldl (λ (cid st)
-             (set-union st (hash-ref cid-to-object-table cid '())))
+             (set-union st (hash-ref cid-to-object-table cid seteq)))
            (seteq)
            lst-of-cid)
     (semaphore-post object-table/semaphore)))
@@ -403,26 +410,32 @@
 |||||||||||||||||||||||||||||||||||#
 
 (define object-reload-channel (make-channel))
-(define object-reload-thread
-  (thread
-   (λ ()
-     (let loop ()
-       (define record-set (thread-receive))
-       (for ([orec (in-set record-set)])
-         (semaphore-wait (object-record-reload-semaphore orec))
-         (semaphore-wait (object-record-semaphore orec))
-         (unless (set-empty? (object-record-holds orec))
-           (set-object-record-wants-reload?! orec #t)
-           (semaphore-post (object-record-semaphore orec))
-           (sync object-reload-channel))
-         (let ([object-box (weak-box-value (object-record-obj orec))])
-           (when object-box
-             (let* ([old-object (unbox object-box)]
-                    [new-object (hot-reload old-object)])
-               (set-object-record-wants-reload?! orec #f)
-               (semaphore-post (object-record-semaphore orec))
-               (semaphore-post (object-record-reload-semaphore orec))))))
-         (loop)))))
+(define object-reload-thread #f)
+(define (start-object-reload-thread!)
+  (set! object-reload-thread
+        (thread
+         (λ ()
+           (let loop ()
+             (define record-set (thread-receive))
+             (for ([orec (in-set record-set)])
+               (semaphore-wait (object-record-reload-semaphore orec))
+               (semaphore-wait (object-record-semaphore orec))
+               (unless (set-empty? (object-record-holds orec))
+                 (set-object-record-wants-reload?! orec #t)
+                 (semaphore-post (object-record-semaphore orec))
+                 (sync object-reload-channel))
+               (let ([object-box (weak-box-value (object-record-obj orec))])
+                 (when object-box
+                   (let* ([old-object (unbox object-box)]
+                          [new-object (hot-reload old-object)])
+                     (set-object-record-wants-reload?! orec #f)
+                     (semaphore-post (object-record-semaphore orec))
+                     (semaphore-post (object-record-reload-semaphore orec))))))
+             (loop))))))
+
+(define (stop-object-reload-thread!)
+  (kill-thread object-reload-thread)
+  (set! object-reload-thread #f))
          
 (define (trigger-reload! o)
   (thread-send object-reload-thread (list (get-object-record (maybe-lazy-deref o)))))
@@ -442,6 +455,11 @@
                'rackmud
                (format "Modified CIDs: ~v"
                        modified-class-ids))
+  (log-message (current-logger)
+               'debug
+               'rackmud
+               (format "Objects that need a reload: ~v"
+                       objects-needing-reload))
   
   (thread-send object-reload-thread objects-needing-reload))
 

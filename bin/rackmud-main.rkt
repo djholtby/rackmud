@@ -215,16 +215,18 @@
     
   ;; Next, start the scheduler so events can be processed
     
+  (start-executor!)
   (start-scheduler! (hash-ref cfg 'thread-count))  
   (display "Loading Master Object...")
   (set! t0 (current-inexact-milliseconds))
   (define t-master t0)
   (void
-   (load-master-object! resolved-collect
-                        (string->symbol (hash-ref cfg 'master-classname "custom-master%"))))
+   
+     (load-master-object! resolved-collect
+                          (string->symbol (hash-ref cfg 'master-classname "custom-master%"))))
 
   (printf "loaded in ~vms\n" (round (inexact->exact (- (current-inexact-milliseconds) t0))))
-
+  
   (when (is-a? master-object has-setup-menu<%>)
     (displayln "master object has setup menu")
     ;(displayln (send master-object setup-complete?))
@@ -232,7 +234,7 @@
       (displayln "Master Object has a setup menu that has not been completed.  Starting menu...")
       (send master-object run-setup-menu! pre-readline-input-port (current-output-port))))
         
-      
+  (start-object-reload-thread!)
     
   (define (add-telnet-user in out ip [secure? #f])
     (define conn (new custom-telnet% [in in] [out out] [ip ip] [secure? secure?]

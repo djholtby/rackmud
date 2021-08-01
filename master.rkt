@@ -144,6 +144,8 @@ The connection manager will send a telnet-object to it whenever a user connects.
                "Master object shutdown method completed"
                #f #f)
   (scheduler-stop! scheduler)
+  (stop-object-reload-thread!)
+  (stop-executor!)
   (displayln "Stopped scheduler")
   (when webserver
     (webserver-stop)
