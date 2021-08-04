@@ -64,8 +64,18 @@
   (conn-mixin websock-terminal%))
 
 (define mudlib (hash-ref cfg 'mudlib-path #f))
-(define mudlib/path (and mudlib (path->complete-path
-                                 (path->directory-path (simplify-path (string->path mudlib))))))
+(define mudlib/path (and mudlib (simplify-path
+                                 (path->directory-path
+                                  (path->complete-path (string->path mudlib))))))
+
+(define mudlib-runtime-path (simplify-path
+                             (path->directory-path
+                              (path->complete-path
+                               (hash-ref cfg 'mudlib-runtime-path "./runtime-collects/")))))
+
+(unless (directory-exists? mudlib-runtime-path)
+  (make-directory mudlib-runtime-path))
+
 (define mudlib-collect (string->symbol (hash-ref cfg 'mudlib-collect "mudlib")))
 (unless (module-path? mudlib-collect)
   (error 'mudlib-collection: "Expected module-path? but found ~a" mudlib-collect))
@@ -74,9 +84,11 @@
 (define compiler-place
   (dynamic-place COMPILER-PLACE 'compiler-place-main))
 
-(place-channel-put compiler-place mudlib/path)
-(place-channel-put compiler-place mudlib-collect)
-(place-channel-put compiler-place (hash-ref cfg 'compile-mudlib-on-launch? #t))
+(place-channel-put compiler-place
+                   `((mudlib-collect . ,mudlib-collect)
+                     (extra-collects-path . ,mudlib/path)
+                     (compile-on-launch? . ,(hash-ref cfg 'compile-mudlib-on-launch? #t))
+                     (runtime-collects-path . ,mudlib-runtime-path)))
 
 ;(define rackmud-logger (make-logger #f (current-logger) 'warning #f))
 ;(current-logger rackmud-logger)
@@ -116,17 +128,13 @@
 
 (define-namespace-anchor anc)
 (define ns (namespace-anchor->namespace anc))
-(parameterize (
-               (current-library-collection-paths
-                (if mudlib/path
-                    (cons  mudlib/path (current-library-collection-paths))
-                    (current-library-collection-paths)))
+(parameterize ((current-library-collection-paths
+                (cons mudlib-runtime-path (current-library-collection-paths)))
                (current-namespace ns)
                (jwt-secret (get-jwt-secret))
                (jwt-duration (hash-ref cfg 'jwt-duration 600))
                (jwt-domain (hash-ref cfg 'server-domain #f))
                (current-unescaped-tags html-unescaped-tags)
-               (use-compiled-file-check 'exists) ; can edit src files while the server is running
                (rackmud:domain (hash-ref cfg 'server-domain #f))
                (rackmud:telnet-port (and telnet-enabled? telnet-port))
                (rackmud:ssl-telnet-port (and telnet-ssl-enabled? telnet-ssl-port))
@@ -417,7 +425,7 @@
       (place-channel-put/get compiler-place #t))
     (log-message (current-logger) 'debug 'compiler-place
                  (format "Compiler Place reports compilation completed: ~v" changes-or-exn) #f #f)
-    (eprintf "~v\n" changes-or-exn)
+    ;(eprintf "~v\n" changes-or-exn)
     (match changes-or-exn
       [(cons 'changes list-of-changes) (rackmud-mark-reloads list-of-changes) #t]
       [(cons 'errors list-of-errors)

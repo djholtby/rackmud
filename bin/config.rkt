@@ -8,6 +8,7 @@
 (define default-config
   `#hasheq((mudlib-path . #f)
            (mudlib-collect . "mudlib")
+           (mudlib-runtime-path . "./runtime-collects/")
            (master-module . "main.rkt")
            (master-classname . "custom-master%")
            (thread-count . 16)
@@ -39,7 +40,8 @@
    [("-c" "--config") cfg "loads settings from <cfg> (subsequent flags will override)"
     (set! config-name cfg)
     (hash-set! overrides 'filename cfg)]
-   [("-b" "--build") "compiles the mudlib (and then terminates)" (hash-set! overrides 'build #t)]
+   [("-b" "--build") "compiles the mudlib (and then terminates)" (hash-set! overrides 'build-only #t)]
+   [("-B" "--skip-build") "skips the initial compile of mublib " (hash-set! overrides 'compile-mudlib-on-launch? #f)]
    [("-p" "--telnet-port") port "runs telnet on <port>"
     (hash-set! overrides 'telnet:port (string->number port))]
    [("-s" "--secure-telnet-port") port "runs secure telnet on <port> (implies -S)"
@@ -48,7 +50,8 @@
     (hash-set! overrides 'ssl:certificate cert)]
    [("-K" "--ssl-key") key "path to SSL private key"
     (hash-set! overrides 'ssl:private-key key)]
-    
+   [("-r" "--runtime-path") path "path to be used for the runtime mudlib collection"
+    (hash-set! overrides 'mudlib-runtime-path path)]
    #:once-any
    [("-i" "--interactive") "run with a Racket REPL hooked into STDIN and STDOUT" (hash-set! overrides 'interactive #t)]
    [("--not-interactive") "disables REPL (if enable by cfg file)" (hash-set! overrides 'interactive #f)]
