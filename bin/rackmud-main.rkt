@@ -303,11 +303,6 @@
                    (let loop ()
                      (with-handlers ([exn?
                                       (lambda (e)
-                                        (log-message (current-logger)
-                                                     'error 'rackmud:telnet
-                                                     (exn-message e)
-                                                     (exn-continuation-marks e)
-                                                     #f)
                                         (loop))])
                        (define-values (in out) (tcp-accept ssl-serv))
                        (define-values (lip ip) (tcp-addresses in))
@@ -316,7 +311,15 @@
                                                                    #:context ssl-ctxt
                                                                    #:close-original? #t
                                                                    #:shutdown-on-close? #f))
-                       (add-telnet-user sin sout ip #t))
+                       (with-handlers ([exn?
+                                        (lambda (e)
+                                          (log-message (current-logger)
+                                                       'error 'rackmud:telnet
+                                                       (exn-message e)
+                                                       (exn-continuation-marks e)
+                                                       #f)
+                                          (loop))])
+                       (add-telnet-user sin sout ip #t)))
                      (loop))))))
 
   (define (reload-certificates!)
@@ -424,14 +427,15 @@
     (define changes-or-exn
       (place-channel-put/get compiler-place #t))
     (log-message (current-logger) 'debug 'compiler-place
-                 (format "Compiler Place reports compilation completed: ~v" changes-or-exn) #f #f)
-    ;(eprintf "~v\n" changes-or-exn)
+                 "Compiler Place reports compilation completed" #f #f)
     (match changes-or-exn
       [(cons 'changes list-of-changes) (rackmud-mark-reloads list-of-changes) #t]
       [(cons 'errors list-of-errors)
        (for ([error (in-list list-of-errors)])
-         (log-message (current-logger) 'error 'compiler-place error #f #f))
-       #f]))
+         (log-message (current-logger) 'error 'compiler-place (exn-message error)
+                      (exn-continuation-marks error) #f))
+       #f]
+      [else #f]))
 
   (define rebuild-thread
     (thread
