@@ -53,54 +53,56 @@
     (define connection-thread
       (thread
        (lambda ()
-         (let loop ()
-           (define msg
-             (with-handlers ([exn? (λ (e)
-                                     (log-message (current-logger)
-                                                  'error 'rackmud:websock
-                                                  (exn-message e)
-                                                  (exn-continuation-marks e) #f)
-                                     eof)])
-               (ws-recv websock-connection #:payload-type 'text)))
-           (if (eof-object? msg)
-               (begin
-                 (receive msg)
-                 (ws-close! websock-connection))
-               (let* ([msg/json (string->jsexpr (if (bytes? msg) (bytes->string/utf-8 msg) msg))]
-                      [msg-type (hash-ref msg/json 'type "")])
-                 (with-handlers ([exn? (λ (e)
-                                         (log-message (current-logger) 'error #f
-                                                      (exn-message e)
-                                                      (exn-continuation-marks e) #f))])
-                 (case (string->symbol msg-type)
-                   [(text) (receive (hash-ref msg/json 'text))]
-                   [(gmcp) (receive (list 'gmcp
-                                          (hash-ref msg/json 'package)
-                                          (hash-ref msg/json 'payload #f)))]
-                   [(naws)
-                    (let ([width (hash-ref msg/json 'width)]
-                          [height (hash-ref msg/json 'height)])
-                      (set-dimensions! width height)
-                      (receive (list 'naws width height)))]
-                   [else (log-message (current-logger)
-                                      'debug 'rackmud:websock
-                                      (format "unhandled websocket message: ~v" msg/json) #f #f)]))
-                 (loop)))))))
+         (with-handlers
+             ([exn:break:hang-up? void])
+           (let loop ()
+             (define msg
+               (with-handlers ([exn? (λ (e)
+                                       (log-message (current-logger)
+                                                    'error 'rackmud:websock
+                                                    (exn-message e)
+                                                    (exn-continuation-marks e) #f)
+                                       eof)])
+                 (ws-recv websock-connection #:payload-type 'text)))
+             (if (eof-object? msg)
+                 (begin
+                   (receive msg)
+                   (ws-close! websock-connection))
+                 (let* ([msg/json (string->jsexpr (if (bytes? msg) (bytes->string/utf-8 msg) msg))]
+                        [msg-type (hash-ref msg/json 'type "")])
+                   (with-handlers ([exn? (λ (e)
+                                           (log-message (current-logger) 'error #f
+                                                        (exn-message e)
+                                                        (exn-continuation-marks e) #f))])
+                     (case (string->symbol msg-type)
+                       [(text) (receive (hash-ref msg/json 'text))]
+                       [(gmcp) (receive (list 'gmcp
+                                              (hash-ref msg/json 'package)
+                                              (hash-ref msg/json 'payload #f)))]
+                       [(naws)
+                        (let ([width (hash-ref msg/json 'width)]
+                              [height (hash-ref msg/json 'height)])
+                          (set-dimensions! width height)
+                          (receive (list 'naws width height)))]
+                       [else (log-message (current-logger)
+                                          'debug 'rackmud:websock
+                                          (format "unhandled websocket message: ~v" msg/json) #f #f)]))
+                   (loop))))))))
                                       
     
     (define/override (transmit . args)
       (with-handlers ([exn-expected? (λ (_)
                                        (receive eof)
-                                       (kill-thread connection-thread))])
+                                       (break-thread connection-thread 'hang-up))])
         (for ([msg (in-list args)])
           (if (ws-conn-closed? websock-connection)
               (begin (receive eof)
-                     (kill-thread connection-thread))
+                     (break-thread connection-thread 'hang-up))
               (match msg
                 [(or #f (? eof-object?))
                  (ws-close! websock-connection #:reason "Connection closed by server")
                  (receive eof)
-                 (kill-thread connection-thread)]
+                 (break-thread connection-thread 'hang-up)]
                 [(? string?) (ws-send! websock-connection
                                        (jsexpr->string `#hasheq((type . "text")
                                                                 (text . ,(xexpr->string msg)))))]
