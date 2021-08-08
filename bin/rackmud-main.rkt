@@ -432,8 +432,8 @@
       [(cons 'changes list-of-changes) (rackmud-mark-reloads list-of-changes) #t]
       [(cons 'errors list-of-errors)
        (for ([error (in-list list-of-errors)])
-         (log-message (current-logger) 'error 'compiler-place (exn-message error)
-                      (exn-continuation-marks error) #f))
+         (log-message (current-logger) 'error 'compiler-place
+                      (second error) #f #f))
        #f]
       [else #f]))
 
