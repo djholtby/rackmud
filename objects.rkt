@@ -30,6 +30,12 @@
          start-executor! stop-object-reload-thread! stop-executor!)
 
 
+(module+ debug
+  (provide get-object-table)
+  
+  (define (get-object-table)
+    object-table))
+
 (define class-dep-sema (make-semaphore 1))
 (define cid->paths (make-hasheqv))
 (define path->cids (make-hash))
@@ -139,7 +145,7 @@
 
 (define (set-code st)
   (string-append
-   (if (immutable? st) "" "m")
+   (if (set-mutable? st) "m" "")
    (if (set-eq? st) "q" (if (set-eqv? st) "v" "e"))))
 
 (define (hash-code ht)
@@ -385,11 +391,12 @@
                (lazy-ref id (weak-box-value (object-record-obj orec)))))]
         [else (raise-argument-error 'make-lazyref "(is-a?/c saved-object%)" o)]))
              
-(struct object-record ([obj #:mutable] holds semaphore reload-semaphore [wants-reload? #:mutable]))
+(struct object-record ([obj #:mutable] holds semaphore reload-semaphore [wants-reload? #:mutable] id)
+  #:transparent)
 
 (define (make-object-record o)
-  (object-record (make-weak-box (box o)) (mutable-seteq) (make-semaphore 1) (make-semaphore 1) #f))
-(define null-record (object-record (make-weak-box #f) #f #f #f #f))
+  (object-record (make-weak-box (box o)) (make-hasheq) (make-semaphore 1) (make-semaphore 1) #f (send o get-id)))
+(define null-record (object-record (make-weak-box #f) #f #f #f #f #f))
 
 ;; get-object-record : SavedObject -> ObjectRecord
 
@@ -420,7 +427,7 @@
              (for ([orec (in-set record-set)])
                (semaphore-wait (object-record-reload-semaphore orec))
                (semaphore-wait (object-record-semaphore orec))
-               (unless (set-empty? (object-record-holds orec))
+               (unless (hash-empty? (object-record-holds orec))
                  (set-object-record-wants-reload?! orec #t)
                  (semaphore-post (object-record-semaphore orec))
                  (sync object-reload-channel))
@@ -429,8 +436,11 @@
                    (let* ([old-object (unbox object-box)]
                           [new-object (hot-reload old-object)])
                      (set-object-record-wants-reload?! orec #f)
+                     (set-box! object-box new-object)
                      (semaphore-post (object-record-semaphore orec))
                      (semaphore-post (object-record-reload-semaphore orec))))))
+             (log-message (current-logger) 'debug 'rackmud
+                          "Finished reloading modified objects")
              (loop))))))
 
 (define (stop-object-reload-thread!)
@@ -458,27 +468,43 @@
   (log-message (current-logger)
                'debug
                'rackmud
-               (format "Objects that need a reload: ~v"
-                       objects-needing-reload))
+               (format "Objects that need a reload: ~a"
+                       (string-join
+                        (map (λ (orec) (format "~a" orec)) (set->list objects-needing-reload)))))
   
   (thread-send object-reload-thread objects-needing-reload))
 
 (define (add-thread-to-object orec)
-  (semaphore-wait (object-record-semaphore orec))
-  (if (set-member? (object-record-holds orec) (current-thread))
-      (semaphore-post (object-record-semaphore orec))
-      (begin
-        (semaphore-post (object-record-semaphore orec))
-        (semaphore-wait (object-record-reload-semaphore orec))
-        (semaphore-wait (object-record-semaphore orec))
-        (set-add! (object-record-holds orec) (current-thread))
-        (semaphore-post (object-record-reload-semaphore orec))
-        (semaphore-post (object-record-semaphore orec)))))
+  ;(semaphore-wait (object-record-semaphore orec))
+  ;(if (set-member? (object-record-holds orec) (current-thread))
+   ;   (semaphore-post (object-record-semaphore orec))
+  ;    (begin
+  ;(semaphore-post (object-record-semaphore orec))
+  (let ([started? #f])
+  (dynamic-wind
+   (lambda () (if started?
+                  (raise
+                   (make-exn:fail:contract:continuation
+                    "illegal jump into saved-object method after it already returned"
+                    (current-continuation-marks)))
+                  (begin
+                    (semaphore-wait (object-record-reload-semaphore orec))
+                    (semaphore-wait (object-record-semaphore orec)))))
+   (lambda ()
+     (set! started? #t)
+     (hash-update! (object-record-holds orec) (current-thread)
+                   add1 0))
+   (lambda ()
+     (semaphore-post (object-record-semaphore orec))
+     (semaphore-post (object-record-reload-semaphore orec))))))
 
 (define (remove-thread-from-object orec)
   (semaphore-wait (object-record-semaphore orec))
-  (set-remove! (object-record-holds orec) (current-thread))
-  (if (and (set-empty? (object-record-holds orec))
+  (let ([v (hash-ref (object-record-holds orec) (current-thread) 0)])
+    (if (> v 1)
+        (hash-set! (object-record-holds orec) (current-thread) (sub1 v))
+        (hash-remove! (object-record-holds orec) (current-thread))))
+  (if (and (hash-empty? (object-record-holds orec))
            (object-record-wants-reload? orec))
       (channel-put object-reload-channel orec)
       (semaphore-post (object-record-semaphore orec))))
@@ -580,19 +606,28 @@
         (let ([o (unsyntax obj-stx)])
           (if (lazy-ref? o)
               (let ([started? #f]
+                    [ended? #f]
                     [o2 (lazy-deref o)]
                     [orec (hash-ref object-table (lazy-ref-id o))])
                 (dynamic-wind
-                 (lambda () (if started?
+                 (lambda ()
+                   (if started?
                                 (raise
                                  (make-exn:fail:contract:continuation
                                   "illegal jump into saved-object method after it already returned"
                                   (current-continuation-marks)))
                                 (add-thread-to-object orec)))
-                 (lambda () (set! started? #t) ((unsyntax-splicing the-thing/pre)
-                                                o2
-                                                (unsyntax-splicing the-thing/post)))
-                 (lambda () (remove-thread-from-object orec))))
+                 (lambda ()
+                   (call-with-continuation-barrier
+                    (lambda ()
+                      (set! started? #t)
+                      (begin0
+                        ((unsyntax-splicing the-thing/pre)
+                         o2
+                         (unsyntax-splicing the-thing/post))
+                        (set! ended? #t)))))
+                 (lambda ()
+                   (remove-thread-from-object orec))))
               ((unsyntax-splicing the-thing/pre)  o (unsyntax-splicing the-thing/post)))))))
 
 (define-syntax (send/rackmud stx)
