@@ -65,33 +65,70 @@ LANGUAGE plpgsql;
 
 CREATE TABLE snapshot(
    sid INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+   freq BOOLEAN NOT NULL DEFAULT true,
+   hourly BOOLEAN NOT NULL DEFAULT false,
+   daily BOOLEAN NOT NULL DEFAULT false,
+   weekly BOOLEAN NOT NULL DEFAULT false,
+   monthly BOOLEAN NOT NULL DEFAULT false,
+   yearly BOOLEAN NOT NULL DEFAULT false,
    taken TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+
 
 
 CREATE TABLE object_fields (
        oid BIGINT REFERENCES objects,
        saved TIMESTAMPTZ NOT NULL DEFAULT now(),
        fields JSONB,
-	   sid INT REFERENCES snapshot,
-       PRIMARY KEY (oid, saved)
+	   PRIMARY KEY (oid, saved)
+);
+
+ALTER TABLE objects ADD FOREIGN KEY (oid, saved) REFERENCES object_fields (oid, saved) ON UPDATE CASCADE ON DELETE RESTRICT;
+CREATE INDEX object_fkey_index ON objects USING btree(oid,saved);
+
+CREATE TABLE snapshot_fields (
+  sid INT NOT NULL REFERENCES snapshot ON DELETE CASCADE,
+  oid BIGINT NOT NULL,
+  saved TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (sid, oid),
+  FOREIGN KEY (oid, saved) REFERENCES object_fields (oid, saved) ON UPDATE CASCADE ON DELETE RESTRICT;
 );
 
 CREATE UNIQUE INDEX snapshot_by_time ON snapshot USING btree(taken);
+CREATE INDEX snapshot_fields_fkey_index ON snapshot_fields USING btree(oid,saved);
 
-CREATE OR REPLACE FUNCTION take_snapshot() RETURNS TIMESTAMPTZ AS
+
+CREATE FUNCTION take_snapshot(boolean, boolean, boolean, boolean, boolean, boolean) RETURNS TIMESTAMPTZ AS
 $$
 DECLARE 
   new_sid INT;
   taken_value TIMESTAMPTZ;
 BEGIN
-  INSERT INTO snapshot DEFAULT VALUES RETURNING sid,taken INTO new_sid,taken_value;
-  UPDATE object_fields   
-    SET sid = new_sid
-  FROM objects 
-    WHERE (objects.oid = object_fields.oid AND objects.saved = object_fields.saved);
+  INSERT INTO snapshot (freq, hourly, daily, weekly, monthly, yearly) VALUES ($1, $2, $3, $4, $5, $6) RETURNING sid,taken INTO new_sid,taken_value;
+  INSERT INTO snapshot_fields (sid, oid, saved) 
+    SELECT new_sid, objects.oid, objects.saved FROM objects; 
    
   return taken_value;
+END;
+$$
+LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION object_upsert_fields(BIGINT, JSONB) RETURNS TIMESTAMPTZ AS
+$$
+DECLARE
+  old_fields JSONB;
+  ts TIMESTAMPTZ;
+BEGIN
+  SELECT od.fields, o.saved into old_fields, ts FROM objects o INNER JOIN object_fields od 
+   ON (o.oid = $1) AND (od.oid = $1) AND (o.saved = od.saved);
+  IF old_fields = $2 THEN
+	 UPDATE object_fields SET saved = now() WHERE oid = $1 AND saved = ts;
+     RETURN ts;
+  ELSE
+     INSERT INTO object_fields (oid, fields) values ($1, $2) ON CONFLICT (oid, saved) DO UPDATE SET fields = EXCLUDED.fields RETURNING saved into ts;  
+	 RETURN ts;
+  END IF;
 END;
 $$
 LANGUAGE plpgsql;

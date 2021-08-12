@@ -26,6 +26,14 @@
          database-update-class-hierarchy
          database-find-objects-by-ancestor-class
          database-find-objects-by-class
+
+         database-snapshot-limit:frequent
+         database-snapshot-limit:hourly
+         database-snapshot-limit:daily
+         database-snapshot-limit:weekly
+         database-snapshot-limit:monthly
+
+         database-take-snapshot database-prune-snapshots
          )
 
 (define (make-rackmud-db-pool db-port db-sock db-srv db-db db-user db-pass)
@@ -120,12 +128,38 @@
   (virtual-statement
    "INSERT INTO objects (cid) VALUES ($1) RETURNING oid, created"))
 
+(define prune-object-saves
+  (virtual-statement
+   "delete from object_fields ofs where\
+    NOT EXISTS (select o.oid, o.saved from objects o where o.oid=ofs.oid and o.saved=ofs.saved) AND\
+    NOT EXISTS (select * from snapshot_fields sf where sf.oid = ofs.oid AND sf.saved = ofs.saved)"))
+
+;(define save-object-stmt
+;  (virtual-statement
+;   (string-append
+;    "INSERT INTO object_fields (oid, fields) values ($1, $2)"
+;    "ON CONFLICT (oid, saved) DO UPDATE SET fields = EXCLUDED.fields RETURNING saved")))
 (define save-object-stmt
   (virtual-statement
-   (string-append
-    "INSERT INTO object_fields (oid, fields) values ($1, $2)"
-    "ON CONFLICT (oid, saved) DO UPDATE SET fields = EXCLUDED.fields RETURNING saved")))
-;"UPDATE objects SET name=$1, saved=$2, fields=$3 WHERE oid = $4"))
+   "SELECT object_upsert_fields($1, $2)"))
+
+
+(define take-snapshot-stmt
+  (virtual-statement
+   "SELECT take_snapshot($1::boolean,$2::boolean,$3::boolean,$4::boolean,$5::boolean, $6::boolean)"))
+
+(define get-snapshot-stmt
+  (virtual-statement
+   "SELECT sid, freq, hourly, daily, weekly, monthly, yearly, taken from snapshot order by taken desc"))
+
+(define delete-snapshot-stmt
+  (virtual-statement
+   "DELETE FROM snapshot WHERE sid = $1"))
+
+(define update-snapshot-stmt
+  (virtual-statement
+   "UPDATE snapshot set freq = $2, hourly = $3, daily = $4, weekly = $5, monthly = $6 where sid = $1"))
+
 
 (define search-tags-stmt
   (virtual-statement
@@ -742,3 +776,125 @@ database-get-cid! : Symbol Path -> Nat
 
 (define (database-find-objects-by-class cid)
   (query-list _dbc_ find-object-by-class-stmt cid))
+
+
+
+
+
+#|||||||||||||||||||||||||||||||||||||||||||| SNAPSHOTS ||||||||||||||||||||||||||||||||||||||||||||#
+
+(define snapshot-tags '(frequent hourly daily weekly monthly yearly))
+
+(define (database-take-snapshot [tag 'frequent])
+  (let ([freq? #t]
+        [hourly? (not (eq? tag 'frequent))]
+        [daily? (not (memq tag '(frequent hourly)))]
+        [weekly? (not (memq tag '(frequent hourly daily)))]
+        [monthly? (not (memq tag '(frequent hourly daily weekly)))]
+        [yearly? (eq? tag 'yearly)])
+    (query-exec _dbc_ take-snapshot-stmt freq? hourly? daily? weekly? monthly? yearly?)))
+
+(define database-snapshot-limit:frequent
+  (make-parameter 8
+                  (λ (v)
+                    (if (exact-nonnegative-integer? v)
+                        v
+                        (raise-argument-error 'database-snapshot-limit:frequent
+                                              "exact-nonnegative-integer?"
+                                              v)))))
+
+(define database-snapshot-limit:hourly
+  (make-parameter 24
+                  (λ (v)
+                    (if (exact-nonnegative-integer? v)
+                        v
+                        (raise-argument-error 'database-snapshot-limit:hourly
+                                              "exact-nonnegative-integer?"
+                                              v)))))
+
+(define database-snapshot-limit:daily
+  (make-parameter 10
+                  (λ (v)
+                    (if (exact-nonnegative-integer? v)
+                        v
+                        (raise-argument-error 'database-snapshot-limit:daily
+                                              "exact-nonnegative-integer?"
+                                              v)))))
+
+(define database-snapshot-limit:weekly
+  (make-parameter 8
+                  (λ (v)
+                    (if (exact-nonnegative-integer? v)
+                        v
+                        (raise-argument-error 'database-snapshot-limit:weekly
+                                              "exact-nonnegative-integer?"
+                                              v)))))
+
+(define database-snapshot-limit:monthly
+  (make-parameter 18
+                  (λ (v)
+                    (if (exact-nonnegative-integer? v)
+                        v
+                        (raise-argument-error 'database-snapshot-limit:monthly
+                                              "exact-nonnegative-integer?"
+                                              v)))))
+
+
+(define (subif v b)
+  (if b (max 0 (sub1 v)) v))
+
+(define (database-prune-snapshots)
+  (define snapshot-list
+    (query-rows _dbc_ get-snapshot-stmt))
+  (let loop ([snapshots (query-rows _dbc_ get-snapshot-stmt)]
+             [freq-left (database-snapshot-limit:frequent)]
+             [hour-left (database-snapshot-limit:hourly)]
+             [day-left (database-snapshot-limit:daily)]
+             [week-left (database-snapshot-limit:weekly)]
+             [month-left (database-snapshot-limit:monthly)]
+             [update-acc '()]
+             [delete-acc '()])
+    (if (null? snapshots)
+        (call-with-transaction
+         _dbc_
+         (λ ()
+           (when (or (cons? delete-acc) (cons? update-acc))
+             (log-message (current-logger) 'info 'rackmud
+                          (format "Pruning Snapshots - delete snapshots: ~v\nmodify snapshot tags: ~v"
+                                  delete-acc update-acc) (current-continuation-marks) #f)
+             (for ([sid (in-list delete-acc)])
+               (query-exec _dbc_ delete-snapshot-stmt sid))
+             (for ([update-data (in-list update-acc)])
+               (apply query-exec _dbc_ update-snapshot-stmt update-data)))))
+        (match-let ([(vector sid freq? hour? day? week? month? year? ts/sql) (car snapshots)])
+          (define changed? (or (and freq? (zero? freq-left))
+                               (and hour? (zero? hour-left))
+                               (and day? (zero? day-left))
+                               (and week? (zero? week-left))
+                               (and month? (zero? month-left))))
+          (if changed?
+              (let ([new-tags (list year?
+                                    (and freq? (positive? freq-left))
+                                    (and hour? (positive? hour-left))
+                                    (and day? (positive? day-left))
+                                    (and week? (positive? week-left))
+                                    (and month? (positive? month-left)))])
+                (define keep? (ormap (λ (x) x) new-tags))
+                (loop (cdr snapshots)
+                    (subif freq-left freq?)
+                    (subif hour-left hour?)
+                    (subif day-left day?)
+                    (subif week-left week?)
+                    (subif month-left month?)
+                    (if keep? (cons (cons sid (cdr new-tags)) update-acc) update-acc)
+                    (if keep? delete-acc (cons sid delete-acc))))
+              (loop (cdr snapshots)
+                    (subif freq-left freq?)
+                    (subif hour-left hour?)
+                    (subif day-left day?)
+                    (subif week-left week?)
+                    (subif month-left month?)
+                    update-acc
+                    delete-acc))))))
+        
+
