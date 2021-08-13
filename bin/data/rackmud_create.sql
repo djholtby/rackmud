@@ -28,11 +28,18 @@ CREATE TABLE objects (
 	cid INT NOT NULL REFERENCES classes,
 	created TIMESTAMPTZ NOT NULL DEFAULT now(),
 	saved TIMESTAMPTZ,
+    fields JSONB,
 	PRIMARY KEY (oid)
 );
 
-CREATE INDEX objects_by_ver ON objects (saved);
 CREATE INDEX objects_by_class ON objects (cid);
+
+CREATE TABLE object_archive (
+       oid BIGINT REFERENCES objects,
+       saved TIMESTAMPTZ NOT NULL DEFAULT now(),
+       fields JSONB,
+	   PRIMARY KEY (oid, saved)
+);
 
 CREATE TABLE field_index_names (
 	fid SERIAL UNIQUE NOT NULL,
@@ -41,12 +48,30 @@ CREATE TABLE field_index_names (
 	PRIMARY KEY (fid)
 );
 
+CREATE OR REPLACE FUNCTION object_upsert_fields(BIGINT, JSONB) RETURNS TIMESTAMPTZ AS
+$$
+DECLARE
+  old_fields JSONB;
+  ts TIMESTAMPTZ;
+BEGIN
+  SELECT o.fields, o.saved into old_fields, ts FROM objects o WHERE oid = $1;
+  IF old_fields = $2 THEN
+     UPDATE object_archive SET saved = now() where oid = $1 and saved = ts RETURNING saved into ts;
+	 UPDATE objects SET saved = ts WHERE oid = $1;
+     RETURN ts;
+  ELSE
+     UPDATE objects SET saved = now(), fields = $2 WHERE oid = $1 RETURNING saved into ts;
+     INSERT INTO object_archive (oid, fields, saved) VALUES ($1, $2, ts);
+	 RETURN ts;
+  END IF;
+END;
+$$
+LANGUAGE plpgsql;
+
+
+
+
 CREATE UNIQUE INDEX field_id_index ON field_index_names USING btree(cid, field_name);
-
-
-
-
-
 
 CREATE OR REPLACE FUNCTION get_field_index(INT, VARCHAR) RETURNS INT AS
 $$
@@ -63,6 +88,9 @@ $$
 LANGUAGE plpgsql;
 
 
+
+
+
 CREATE TABLE snapshot(
    sid INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
    freq BOOLEAN NOT NULL DEFAULT true,
@@ -77,22 +105,13 @@ CREATE TABLE snapshot(
 
 
 
-CREATE TABLE object_fields (
-       oid BIGINT REFERENCES objects,
-       saved TIMESTAMPTZ NOT NULL DEFAULT now(),
-       fields JSONB,
-	   PRIMARY KEY (oid, saved)
-);
-
-ALTER TABLE objects ADD FOREIGN KEY (oid, saved) REFERENCES object_fields (oid, saved) ON UPDATE CASCADE ON DELETE RESTRICT;
-CREATE INDEX object_fkey_index ON objects USING btree(oid,saved);
 
 CREATE TABLE snapshot_fields (
   sid INT NOT NULL REFERENCES snapshot ON DELETE CASCADE,
   oid BIGINT NOT NULL,
   saved TIMESTAMPTZ NOT NULL,
   PRIMARY KEY (sid, oid),
-  FOREIGN KEY (oid, saved) REFERENCES object_fields (oid, saved) ON UPDATE CASCADE ON DELETE RESTRICT;
+  FOREIGN KEY (oid, saved) REFERENCES object_archive (oid, saved) ON UPDATE CASCADE ON DELETE RESTRICT
 );
 
 CREATE UNIQUE INDEX snapshot_by_time ON snapshot USING btree(taken);
@@ -108,45 +127,10 @@ BEGIN
   INSERT INTO snapshot (freq, hourly, daily, weekly, monthly, yearly) VALUES ($1, $2, $3, $4, $5, $6) RETURNING sid,taken INTO new_sid,taken_value;
   INSERT INTO snapshot_fields (sid, oid, saved) 
     SELECT new_sid, objects.oid, objects.saved FROM objects; 
-   
   return taken_value;
 END;
 $$
 LANGUAGE plpgsql;
-
-CREATE OR REPLACE FUNCTION object_upsert_fields(BIGINT, JSONB) RETURNS TIMESTAMPTZ AS
-$$
-DECLARE
-  old_fields JSONB;
-  ts TIMESTAMPTZ;
-BEGIN
-  SELECT od.fields, o.saved into old_fields, ts FROM objects o INNER JOIN object_fields od 
-   ON (o.oid = $1) AND (od.oid = $1) AND (o.saved = od.saved);
-  IF old_fields = $2 THEN
-	 UPDATE object_fields SET saved = now() WHERE oid = $1 AND saved = ts;
-     RETURN ts;
-  ELSE
-     INSERT INTO object_fields (oid, fields) values ($1, $2) ON CONFLICT (oid, saved) DO UPDATE SET fields = EXCLUDED.fields RETURNING saved into ts;  
-	 RETURN ts;
-  END IF;
-END;
-$$
-LANGUAGE plpgsql;
-
-
-CREATE INDEX object_by_tags ON object_fields USING gin((fields->'tags'->'value'));
-
-CREATE OR REPLACE FUNCTION object_version_update() RETURNS TRIGGER AS                                                                                                               
-$$
-BEGIN
-    UPDATE objects SET saved = new.saved WHERE oid = new.oid;
-    RETURN new;
-END;
-$$
-LANGUAGE plpgsql;
-
-CREATE TRIGGER trig_version_update AFTER INSERT ON object_fields 
-       FOR EACH ROW EXECUTE PROCEDURE object_version_update();
 
 
 
@@ -180,18 +164,10 @@ CREATE TABLE auth (
 CREATE INDEX ON auth USING btree(oid);
 CREATE INDEX ON auth USING btree(expires) WHERE expires IS NOT NULL;
 
-CREATE TABLE jwt_revoke (
-   jwt TEXT NOT NULL,
-   expires TIMESTAMPTZ,
-   PRIMARY KEY(jwt)
-);
-
-CREATE INDEX ON jwt_revoke using btree(expires);
-
 CREATE TABLE metadata (
   id TEXT NOT NULL UNIQUE,
   val JSONB NOT NULL,
   PRIMARY KEY(id)
 );
 
-INSERT INTO metadata VALUES ('database-version', '3'::jsonb);
+INSERT INTO metadata VALUES ('database-version', '4'::jsonb);

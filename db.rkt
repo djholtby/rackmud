@@ -92,8 +92,7 @@
 
 (define object-load-stmt
   (virtual-statement
-   "SELECT cid, o.created, o.saved, od.fields FROM objects o INNER JOIN object_fields od \
-   ON (o.oid = $1) AND (od.oid = $1) AND (o.saved = od.saved)"))
+   "SELECT cid, created, saved, fields FROM objects WHERE oid = $1"))
 
 
 (define class-load-stmt
@@ -130,9 +129,9 @@
 
 (define prune-object-saves
   (virtual-statement
-   "delete from object_fields ofs where\
-    NOT EXISTS (select o.oid, o.saved from objects o where o.oid=ofs.oid and o.saved=ofs.saved) AND\
-    NOT EXISTS (select * from snapshot_fields sf where sf.oid = ofs.oid AND sf.saved = ofs.saved)"))
+   "delete from object_archive arch where\
+    NOT EXISTS (select o.oid, o.saved from objects o where o.oid=arch.oid and o.saved=arch.saved) AND\
+    NOT EXISTS (select * from snapshot_fields sf where sf.oid = arch.oid AND sf.saved = arch.saved)"))
 
 ;(define save-object-stmt
 ;  (virtual-statement
@@ -163,16 +162,16 @@
 
 (define search-tags-stmt
   (virtual-statement
-   (string-append "SELECT oid from object_fields WHERE fields->'tags'->$1->'value' @> $2 AND\n"
-                  "     EXISTS (SElECT 1 from objects where objects.saved = object_fields.saved)")))
+   "SELECT oid from objects WHERE fields->'tags'->$1->'value' @> $2"))
+                  
 
 (define search-field-stmt
   (virtual-statement
-   "SELECT oid FROM object_fields WHERE fields->$1 = $2 AND EXISTS (SELECT 1 FROM objects WHERE objects.saved = object_fields.saved)"))
+   "SELECT oid FROM objects WHERE fields->$1 = $2"))
 
 (define search-field-stmt/array
   (virtual-statement
-   "SELECT oid FROM object_fields WHERE fields->$1 @> $2::jsonb AND EXISTS (SELECT 1 FROM objects WHERE objects.saved = object_fields.saved)"))
+   "SELECT oid FROM objects WHERE fields->$1 @> $2::jsonb"))
 
 (define get-singleton-stmt
   (virtual-statement
@@ -400,87 +399,72 @@ database-get-cid! : Symbol Path -> Nat
 
 (define field-search-statement/?
   (virtual-statement
-   (string-append "SELECT oid FROM object_fields WHERE fields#>$1 ? $2::jsonb AND EXISTS (SELECT 1 FROM objects WHERE\n"
-                  "     objects.oid = object_fields.oid AND objects.saved = object_fields.saved)")))
+   "SELECT oid FROM objects WHERE fields#>$1 ? $2::jsonb"))
 
 
 (define field-search-statement/?&
   (virtual-statement
-   (string-append "SELECT oid FROM object_fields WHERE fields#>$1 ?& $2 AND EXISTS (SELECT 1 FROM objects WHERE\n"
-                  "     objects.oid = object_fields.oid AND objects.saved = object_fields.saved)")))
+   "SELECT oid FROM objects WHERE fields#>$1 ?& $2"))
+   
 
 (define field-search-statement/?\|
   (virtual-statement
-   (string-append "SELECT oid FROM object_fields WHERE fields#>$1 ?| $2 AND EXISTS (SELECT 1 FROM objects WHERE\n"
-                  "     objects.oid = object_fields.oid AND objects.saved = object_fields.saved)")))
-
+   "SELECT oid FROM objects WHERE fields#>$1 ?| $2"))
+   
 (define field-search-statement/@>
   (virtual-statement
-   (string-append "SELECT oid FROM object_fields WHERE fields#>$1 @> $2 AND EXISTS (SELECT 1 FROM objects WHERE\n"
-                  "     objects.oid = object_fields.oid AND objects.saved = object_fields.saved)")))
+   "SELECT oid FROM objects WHERE fields#>$1 @> $2"))
 
 (define field-search-statement/=
   (virtual-statement
-   (string-append "SELECT oid FROM object_fields WHERE fields#>$1 = $2 AND EXISTS (SELECT 1 FROM objects WHERE\n"
-                  "     objects.oid = object_fields.oid AND objects.saved = object_fields.saved)")))
+   "SELECT oid FROM objects WHERE fields#>$1 = $2"))
 
 (define field-search-statement/!=
   (virtual-statement
-   (string-append "SELECT oid FROM object_fields WHERE fields#>$1 != $2 AND EXISTS (SELECT 1 FROM objects WHERE\n"
-                  "     objects.oid = object_fields.oid AND objects.saved = object_fields.saved)")))
+   "SELECT oid FROM objects WHERE fields#>$1 != $2"))
 
 (define field-search-statement/<
   (virtual-statement
-   (string-append "SELECT oid FROM object_fields WHERE fields#>$1 < $2 AND EXISTS (SELECT 1 FROM objects WHERE\n"
-                  "     objects.oid = object_fields.oid AND objects.saved = object_fields.saved)")))
+   "SELECT oid FROM objects WHERE fields#>$1 < $2"))
 
 (define field-search-statement/<=
   (virtual-statement
-   (string-append "SELECT oid FROM object_fields WHERE fields#>$1 <= $2 AND EXISTS (SELECT 1 FROM objects WHERE\n"
-                  "     objects.oid = object_fields.oid AND objects.saved = object_fields.saved)")))
+   "SELECT oid FROM objects WHERE fields#>$1 <= $2"))
 
 (define field-search-statement/>
   (virtual-statement
-   (string-append "SELECT oid FROM object_fields WHERE fields#>$1 > $2 AND EXISTS (SELECT 1 FROM objects WHERE\n"
-                  "     objects.oid = object_fields.oid AND objects.saved = object_fields.saved)")))
+   "SELECT oid FROM objects WHERE fields#>$1 > $2"))
 
 (define field-search-statement/>=
   (virtual-statement
-   (string-append "SELECT oid FROM object_fields WHERE fields#>$1 >= $2 AND EXISTS (SELECT 1 FROM objects WHERE\n"
-                  "     objects.oid = object_fields.oid AND objects.saved = object_fields.saved)")))
+  "SELECT oid FROM objects WHERE fields#>$1 >= $2"))
 
 (define field-search-statement/~
   (virtual-statement
-   (string-append "SELECT oid FROM object_fields WHERE fields#>>$1 ~ $2 AND EXISTS (SELECT 1 FROM objects WHERE\n"
-                  "     objects.oid = object_fields.oid AND objects.saved = object_fields.saved)")))
+   "SELECT oid FROM objects WHERE fields#>>$1 ~ $2"))
 
 (define field-search-statement/~*
   (virtual-statement
-   (string-append "SELECT oid FROM object_fields WHERE fields#>>$1 ~* $2 AND EXISTS (SELECT 1 FROM objects WHERE\n"
-                  "     objects.oid = object_fields.oid AND objects.saved = object_fields.saved)")))
+   "SELECT oid FROM objects WHERE fields#>>$1 ~* $2"))
 
 
 (define field-search-statement/!~
   (virtual-statement
-   (string-append "SELECT oid FROM object_fields WHERE fields#>>$1 !~ $2 AND EXISTS (SELECT 1 FROM objects WHERE\n"
-                  "     objects.oid = object_fields.oid AND objects.saved = object_fields.saved)")))
+   "SELECT oid FROM objects WHERE fields#>>$1 !~ $2"))
 
 
 (define field-search-statement/!~*
   (virtual-statement
-   (string-append "SELECT oid FROM object_fields WHERE fields#>>$1 !~* $2 AND EXISTS (SELECT 1 FROM objects WHERE\n"
-                  "     objects.oid = object_fields.oid AND objects.saved = object_fields.saved)")))
+   "SELECT oid FROM objects WHERE fields#>>$1 !~* $2"))
 
 (define field-search-statement/like
   (virtual-statement
-   (string-append "SELECT oid FROM object_fields WHERE fields#>>$1 LIKE $2 AND EXISTS (SELECT 1 FROM objects WHERE\n"
-                  "     objects.oid = object_fields.oid AND objects.saved = object_fields.saved)")))
+   "SELECT oid FROM objects WHERE fields#>>$1 LIKE $2"))
 
 
 (define field-search-statement/not-like
   (virtual-statement
-   (string-append "SELECT oid FROM object_fields WHERE fields#>>$1 NOT LIKE$2 AND EXISTS (SELECT 1 FROM objects WHERE\n"
-                  "     objects.oid = object_fields.oid AND objects.saved = object_fields.saved)")))
+   "SELECT oid FROM objects WHERE fields#>>$1 NOT LIKE $2"))
 
 
 
@@ -549,13 +533,13 @@ database-get-cid! : Symbol Path -> Nat
       [(simple number string boolean char bytes moment object)
        (query-exec
         _dbc_
-        (format "CREATE INDEX IF NOT EXISTS object_field_~a ON object_fields USING BTREE ((fields#>array[~a])) WHERE\
+        (format "CREATE INDEX IF NOT EXISTS object_field_~a ON objects USING BTREE ((fields#>array[~a])) WHERE\
                  ((fields#>array[~a])) IS NOT NULL"
                 index-name search-path search-path))]
       [(list vector symbol-table set hash json)
        (query-exec
         _dbc_
-        (format "CREATE INDEX IF NOT EXISTS object_field_~a ON object_fields USING GIN ((fields#>array[~a])) WHERE\
+        (format "CREATE INDEX IF NOT EXISTS object_field_~a ON objects USING GIN ((fields#>array[~a])) WHERE\
                  ((fields#>array[~a])) IS NOT NULL"
                 index-name search-path search-path))]
       [else (raise-argument-error 'database-create-field-index "(or/c 'simple 'json)" type)])))
