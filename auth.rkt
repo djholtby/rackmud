@@ -2,7 +2,7 @@
 
 (require net/jwt net/base64 racket/random "db.rkt" gregor)
 (provide jwt-secret jwt-duration jwt-domain jwt-audience make-auth-jwt verify-auth-jwt auth-jwt-exp
-         refresh-jwt)
+         refresh-jwt revoke-jwt prune-jwt-revokation)
 
 (define jwt-secret (make-parameter #f (λ (v) (unless (string? v) 
                                                 (raise-argument-error 'jwt-secret "string?" v))
@@ -10,6 +10,35 @@
 (define jwt-duration (make-parameter (* 10 60))) ; default 10 minutes
 (define jwt-domain (make-parameter #f))          ; default is to not check the domain
 (define jwt-audience (make-parameter '()))
+
+
+(define jwt-revokation-list (make-hash))
+(define revokation-semaphore (make-semaphore 1))
+
+(define (database-check-jwt jwt-string)
+  (call-with-semaphore
+   revokation-semaphore
+   (λ ()
+     (not (hash-has-key? jwt-revokation-list jwt-string)))))
+
+(define (revoke-jwt jwt-string expiration)
+  (call-with-semaphore
+   revokation-semaphore
+   (λ()
+     (hash-set! jwt-revokation-list jwt-string expiration))))
+
+(define (prune-jwt-revokation)
+  (call-with-semaphore
+   revokation-semaphore
+   (λ ()
+     (define expired
+       (for/fold ([acc '()])
+                 ([(jwt exp) (in-hash jwt-revokation-list)])
+         (if (< exp (current-seconds))
+             (cons jwt acc)
+             acc)))
+     (for ([jwt (in-list expired)])
+       (hash-remove! jwt-revokation-list jwt)))))
 
 (define (maybe-list v)
   (and v (list v)))

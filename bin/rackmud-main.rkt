@@ -454,7 +454,7 @@
      (letrec
          ([loop
            (λ ()
-             (database-prune-jwt-revokation)
+             (prune-jwt-revokation)
              (sleep (jwt-duration))
              (loop))])
        loop)))

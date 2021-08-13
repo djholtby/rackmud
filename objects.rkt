@@ -1479,7 +1479,7 @@
 
 (define (expire-auth-token-and-jwt obj seq jwt)
   (database-expire-token (if (lazy-ref? obj) (lazy-ref-id obj) obj) seq)
-  (database-revoke-jwt jwt (auth-jwt-exp jwt) ))
+  (revoke-jwt jwt (auth-jwt-exp jwt)))
 
 (define (expire-all-auth-tokens obj)
   (database-expire-all-tokens (lazy-ref-id obj)))

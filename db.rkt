@@ -13,7 +13,7 @@
          database-expire-all-tokens
          database-create-field-index database-get-field-index-ids database-prune-tokens
          parse-sig-token
-         database-check-jwt database-prune-jwt-revokation database-revoke-jwt database-get-logs
+         database-get-logs
          database-get-log-topics database-get-log-counts
          log-level->int int->log-level
          
@@ -265,17 +265,6 @@
   (virtual-statement
    "DELETE FROM auth WHERE oid = $1"))
 
-(define check-jwt-revokation
-  (virtual-statement
-   "SELECT * from jwt_revoke WHERE jwt = $1"))
-
-(define prune-jwt-revokation
-  (virtual-statement
-   "DELETE FROM jwt_revoke WHERE expires <= now()"))
-
-(define revoke-jwt
-  (virtual-statement
-   "INSERT INTO jwt_revoke (jwt, expires) values ($1, $2)"))
 
 (define module-to-cid-query
   (virtual-statement
@@ -284,29 +273,16 @@
 (define (database-connected?)
   (connection? _dbc_))
 
-(define jwt-prune-thread #f)
 
 (define (database-disconnect)
   (when (connection? _dbc_)
     (disconnect _dbc_)
-    (when (thread? jwt-prune-thread)
-      (kill-thread jwt-prune-thread)
-      (set! jwt-prune-thread #f))
     (set! _dbc_ #f)))
 
 
 (define (set-database-connection! pool)
   (unless (connection? pool) (raise-argument-error 'set-database-connection! "connection?" pool))
   (when _dbc_ (disconnect _dbc_))
-  (when (thread? jwt-prune-thread)
-    (kill-thread jwt-prune-thread))
-  (set! jwt-prune-thread
-        (thread
-         (λ ()
-           (let loop ()
-             (sleep 600)
-             (database-prune-jwt-revokation)
-             (loop)))))
   (set! _dbc_ pool))
 
 
@@ -641,26 +617,6 @@ database-get-cid! : Symbol Path -> Nat
 
 (define (database-make-singleton oid cid)
   (query-exec _dbc_ new-singleton-stmt oid cid))
-
-;; (database-check-jwt jwt-string) returns true if jwt-string has not been revoked, false if it has
-
-(define (database-check-jwt jwt-string)
-  (not (query-maybe-row _dbc_ check-jwt-revokation jwt-string)))
-
-;; (database-prune-jwt-revokation) deletes all jwt revoke records for expired jwts
-;;  (if they're expired they're rejected so the revoke is a waste of space and time)
-
-(define (database-prune-jwt-revokation)
-  (query-exec _dbc_ prune-jwt-revokation))
-
-;; (database-revoke-jwt jwt-string expiration) revokes jwt-string, with the revocation lasting until
-;;   the expiration.  (expiration should be >= the jwt's actual exparation)
-
-(define (database-revoke-jwt jwt-string expiration)
-  (when expiration
-    (query-exec _dbc_ revoke-jwt jwt-string (moment->sql expiration))))
-
-
 
 
 (define (create-logfile-query-parameters levels subjects date-start date-end 
