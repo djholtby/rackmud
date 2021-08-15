@@ -448,7 +448,7 @@
                       (format "Rebuild returned result: ~v" (rackmud-rebuild!))
                       #f #f)
          (loop)))))
-
+  (load-jwt-revokations)
   (define jwt-prune-thread
     (thread
      (letrec
@@ -476,6 +476,8 @@
     (when ssl-thread (kill-thread ssl-thread))
     (when ssl-serv (tcp-close ssl-serv))
     (when jwt-prune-thread (kill-thread jwt-prune-thread))
+    (prune-jwt-revokation)
+    (save-jwt-revokations)
     (when (and (thread? repl-thread) (thread-running? repl-thread))
       (kill-thread repl-thread))
     (kill-thread rebuild-thread)

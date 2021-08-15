@@ -2,7 +2,7 @@
 
 (require net/jwt net/base64 racket/random "db.rkt" gregor)
 (provide jwt-secret jwt-duration jwt-domain jwt-audience make-auth-jwt verify-auth-jwt auth-jwt-exp
-         refresh-jwt revoke-jwt prune-jwt-revokation)
+         refresh-jwt revoke-jwt prune-jwt-revokation load-jwt-revokations save-jwt-revokations)
 
 (define jwt-secret (make-parameter #f (λ (v) (unless (string? v) 
                                                 (raise-argument-error 'jwt-secret "string?" v))
@@ -14,6 +14,15 @@
 
 (define jwt-revokation-list (make-hash))
 (define revokation-semaphore (make-semaphore 1))
+
+(define (load-jwt-revokations [filename "jwt-revokation.rktd"])
+  (with-handlers ([exn:fail:filesystem? void])
+    (for ([(jwt exp) (in-hash (call-with-input-file filename read))])
+      (hash-set! jwt-revokation-list jwt exp))))
+
+(define (save-jwt-revokations [filename "jwt-revokation.rktd"])
+  (call-with-output-file filename #:exists 'replace
+    (λ (out) (write jwt-revokation-list out))))
 
 (define (database-check-jwt jwt-string)
   (call-with-semaphore
