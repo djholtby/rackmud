@@ -33,7 +33,10 @@
          database-snapshot-limit:weekly
          database-snapshot-limit:monthly
 
-         database-take-snapshot database-prune-snapshots
+         database-take-snapshot 
+         database-prune-snapshots
+         database-take-snapshot-as-needed
+         database-snapshot-history
          )
 
 (define (make-rackmud-db-pool db-port db-sock db-srv db-db db-user db-pass)
@@ -723,15 +726,9 @@ database-get-cid! : Symbol Path -> Nat
 
 #|||||||||||||||||||||||||||||||||||||||||||| SNAPSHOTS ||||||||||||||||||||||||||||||||||||||||||||#
 
-(define snapshot-tags '(frequent hourly daily weekly monthly yearly))
 
-(define (database-take-snapshot [tag 'frequent])
-  (let ([freq? #t]
-        [hourly? (not (eq? tag 'frequent))]
-        [daily? (not (memq tag '(frequent hourly)))]
-        [weekly? (not (memq tag '(frequent hourly daily)))]
-        [monthly? (not (memq tag '(frequent hourly daily weekly)))]
-        [yearly? (eq? tag 'yearly)])
+(define (database-take-snapshot freq? hourly? daily? weekly? monthly? yearly?)
+  (when (or freq? hourly? daily? weekly? monthly? yearly?)
     (query-exec _dbc_ take-snapshot-stmt freq? hourly? daily? weekly? monthly? yearly?)))
 
 (define database-snapshot-limit:frequent
@@ -783,9 +780,87 @@ database-get-cid! : Symbol Path -> Nat
 (define (subif v b)
   (if b (max 0 (sub1 v)) v))
 
-(define (database-prune-snapshots)
+
+(define (different-hour? m1 m2)
+  (not (= (->hours m1)
+          (->hours m2))))
+
+(define (different-day? m1 m2)
+  (not (and
+        (= (->year m1)
+           (->year m2))
+        (= (->yday m1)
+           (->yday m2)))))
+
+(define (different-week? m1 m2)
+  (not (and
+        (= (->iso-wyear m1)
+           (->iso-wyear m2))
+        (= (->iso-week m1)
+           (->iso-week m2)))))
+
+(define (different-month? m1 m2)
+  (not (and
+        (= (->year m1)
+           (->year m2))
+        (= (->month m1)
+           (->month m2)))))
+
+(define (different-year? m1 m2)
+  (not (= (->year m1)
+          (->year m2))))
+
+(define (different-15-min? m1 m2)
+  (>= (abs (period-ref (period-between m1 m2 '(minutes)) 'minutes)) 15))
+
+(define (database-snapshot-history)
   (define snapshot-list
     (query-rows _dbc_ get-snapshot-stmt))
+  (let loop ([snapshots snapshot-list]
+             [last-freq #f]
+             [last-hour #f]
+             [last-day #f]
+             [last-week #f]
+             [last-month #f]
+             [last-year #f])
+    (if (null? snapshots)
+        (values last-freq last-hour last-day last-week last-month last-year)
+        (match-let* ([(vector sid freq? hour? day? week? month? year? taken) (car snapshots)]
+                     [taken/moment (adjust-timezone (sql->moment taken) (current-timezone))])
+          (loop
+           (cdr snapshots)
+           (or last-freq (and freq? taken/moment))
+           (or last-hour (and hour? taken/moment))
+           (or last-day (and day? taken/moment))
+           (or last-week (and week? taken/moment))
+           (or last-month (and month? taken/moment))
+           (or last-year (and year? taken/moment)))))))
+
+
+(define (15-minutes-from-now m)
+  (period-ref (period-between (+minutes m 15) (now/moment) '(seconds)) 'seconds))
+
+(define (database-take-snapshot-as-needed)
+  (define-values
+    (last-freq last-hour last-day last-week last-month last-year)
+    (database-snapshot-history))
+  (define curr (now/moment))
+
+  (database-take-snapshot (or (not last-freq) (different-15-min? curr last-freq))
+                          (or (not last-hour) (different-hour? curr last-hour))
+                          (or (not last-day) (different-day? curr last-day))
+                          (or (not last-week) (different-week? curr last-week))
+                          (or (not last-month) (different-month? curr last-month))
+                          (or (not last-year) (different-year? curr last-year)))
+  (database-prune-snapshots)
+  (max 0
+       (if (or (not last-freq) (different-15-min? curr last-freq))
+           (* 15 60) ; 15 minutes in seconds
+           (15-minutes-from-now last-freq))))
+  
+
+  
+(define (database-prune-snapshots)
   (let loop ([snapshots (query-rows _dbc_ get-snapshot-stmt)]
              [freq-left (database-snapshot-limit:frequent)]
              [hour-left (database-snapshot-limit:hourly)]

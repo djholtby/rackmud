@@ -460,7 +460,12 @@
        loop)))
            
                       
-
+  (define snapshot-thread
+    (thread
+     (λ ()
+       (let loop ()
+         (sleep (database-take-snapshot-as-needed))
+         (loop)))))
 
   (define shutdown-semaphore (make-semaphore 0))
   (define (rackmud-shutdown!)
@@ -481,6 +486,7 @@
     (when (and (thread? repl-thread) (thread-running? repl-thread))
       (kill-thread repl-thread))
     (kill-thread rebuild-thread)
+    (kill-thread snapshot-thread)
     (displayln "Telnet and REPL stopped...")
     (shut-down!))     
 
