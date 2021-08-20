@@ -782,8 +782,12 @@ database-get-cid! : Symbol Path -> Nat
 
 
 (define (different-hour? m1 m2)
-  (not (= (->hours m1)
-          (->hours m2))))
+  (not (and (= (->year m1)
+               (->year m2))
+            (= (->yday m1)
+               (->yday m2))
+            (= (->hours m1)
+               (->hours m2)))))
 
 (define (different-day? m1 m2)
   (not (and
@@ -853,6 +857,8 @@ database-get-cid! : Symbol Path -> Nat
                           (or (not last-month) (different-month? curr last-month))
                           (or (not last-year) (different-year? curr last-year)))
   (database-prune-snapshots)
+  (when (and last-hour (different-hour? curr last-hour))
+    (query-exec _dbc_ prune-object-saves))
   (max 0
        (if (or (not last-freq) (different-15-min? curr last-freq))
            (* 15 60) ; 15 minutes in seconds
