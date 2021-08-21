@@ -24,9 +24,14 @@
     (inherit supports? transmit)
     (init [inner-connection #f])
     (init [preauthorized #f])
+    (init [ttype '()])
 
     (define ic inner-connection)
     
+    (define terminal-strings ttype)
+
+    (define/public (get-terminal-strings)
+      terminal-strings)
     
     (define preauth preauthorized)
     (define/public (get-preauthorized-object)
@@ -37,6 +42,9 @@
         (match message
           [(list 'enable where 'mssp)
            (transmit (list 'mssp (send/rackmud master-object get-mssp)))]
+          [(list 'ttype terms)
+           (set! terminal-strings terms)
+           #t]
           [(list 'enable 'local 'mxp)
            (transmit (string-append "\e[1z"
                                     (string-join (send/rackmud master-object get-mxp-preamble))

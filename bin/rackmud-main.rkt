@@ -358,6 +358,7 @@
                                  (string=? "wss" (url-scheme (request-uri req)))))]
                   [ip (request-client-ip req)]
                   [preauthorized (request+object-authorized-object req)]
+                  [ttype '("websock")]
                   ))
            (if (is-a? master-object websocket-server<%>)
                (send master-object websock-request path-elements req)

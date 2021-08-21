@@ -93,7 +93,14 @@
     (define/override (transmit . args)
       (with-handlers ([exn-expected? (λ (_)
                                        (receive eof)
-                                       (break-thread connection-thread 'hang-up))])
+                                       (break-thread connection-thread 'hang-up))]
+                      [exn? (λ (e)
+                              (log-message 'error 'rackmud
+                                           (format "~a\n~a" e (exn-message e))
+                                           (exn-continuation-marks e)
+                                           #f)
+                              (receive eof)
+                              (break-thread connection-thread 'hang-up))])
         (for ([msg (in-list args)])
           (if (ws-conn-closed? websock-connection)
               (begin (receive eof)
