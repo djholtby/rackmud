@@ -100,10 +100,7 @@
   (let-values ([(id duration new-token)
          (database-token-refresh old-token)])
     (if new-token
-        (begin
-          (log-message (current-logger)
-                       'debug 'rackmud:auth (format "JWT refreshed - id=~a" id) #f #f)
-          (values id duration (make-auth-jwt id) new-token))
+        (values id duration (make-auth-jwt id) new-token)
         (begin
           (when old-token ; if old-token is #f it just means this isn't a refresh, it's a login
             (log-message (current-logger)
