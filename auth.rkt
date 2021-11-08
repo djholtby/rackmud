@@ -79,7 +79,8 @@
                                           #:aud (jwt-domain)))])
     (cond [verified-jwt (claims-ref verified-jwt 'user-id)]
           [else (log-message (current-logger)
-                             'warning (format "Recieved an invalid JWT - ~a" jwt) #f #f)])))
+                             'warning (format "Recieved an invalid JWT - ~a" jwt) #f #f)
+                #f])))
                   
 
 ;; auth-jwt-exp: Str -> (or DateTime #f)
