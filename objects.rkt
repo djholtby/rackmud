@@ -68,6 +68,8 @@
 #||||||||||||||||||||||||||||||||||
        LAZY REFERENCE STUFF
 |||||||||||||||||||||||||||||||||||#
+(define (oid? v)
+  (exact-nonnegative-integer? v))
 
 (define (mud-ref-print lr port mode)
   (case mode
@@ -105,6 +107,7 @@
 
 ;; (touch! lr) ensures that lr points to a loaded object (loading from the database if needed)
 
+;; touch!: Lazy-Ref -> Void
 (define (touch! lr)
   (void (lazy-deref lr)))
 
@@ -112,14 +115,14 @@
 ;;  the database otherwise).  produces #f if the object cannot be found in the o-table or the
 ;;  database (i.e. the object has been deleted)
 ;;  If the object was found, updates its last-access field to the current time
-;; lazy-deref: Lazy-Ref -> (U (Instance Saved-Object%) #f)
 
+;; lazy-deref: Lazy-Ref -> (U (Instance Saved-Object%) #f)
 (define (lazy-deref lr)
   (define result (lazy-deref/no-keepalive lr))
   (when result (set-field! last-access result (now/moment/utc)))
   result)
 
-;; (lazy-deref/no-keepalive lr) is the same as lazy-deref except the object's last-access field is not
+;; (lazy-deref/no-keepalive lr) is the same as lazy-deref except the object's last-access field isn't
 ;;    updated.  Use this to query an object without making it seem "still in use"
 
 (define (lazy-deref/no-keepalive lr)
@@ -274,7 +277,7 @@
       (jsexpr->value (hash-ref v 'cdr)))]
     [(lazy-ref)
      ((if (hash-ref v 'weak? #f)
-         lazy-ref:weak lazy-ref)
+          lazy-ref:weak lazy-ref)
       (hash-ref v 'value) #f)]
     [(set)
      (apply (code->set (hash-ref v 'type))
@@ -312,7 +315,19 @@
           OBJECT TABLE
 |||||||||||||||||||||||||||||||||||#
 
-
+;; thoughts about semaphores...tables are protected already by an internal semaphore
+;; so we only need to lock these for things we want to be atomic
+;; Also: eqv tables will be locked indefinitely if the thread is killed
+;;  When do we kill threads?
+;;  - If a telnet / websock connection has a read / write failure then the thread breaks itself
+;;    - that means it won't be in any mudlib code when this happens, so no mudlib threads can possibly
+;;      be locked
+;;    - object-table is never left hanging
+;;    - cid-tables are never left hanging
+;;    - reload thread leaves individual object record semaphores hanging (but no ht involved)
+;;      + it's also just 1 thread that's never killed until the server goes down
+;;    - calling a method locks the object record semaphore, but it unlocks when finished
+;;    - 
 (define object-table/semaphore (make-semaphore 1))
 (define object-table (make-hasheqv empty))
 
@@ -356,14 +371,11 @@
 
 
 (define (cid-list->objects lst-of-cid)
-  (semaphore-wait object-table/semaphore)
-  (begin0
-    (foldl (λ (cid st)
-             (set-union st (hash-ref cid-to-object-table cid seteq)))
-           (seteq)
-           lst-of-cid)
-    (semaphore-post object-table/semaphore)))
-
+  (foldl (λ (cid st)
+           (set-union st (hash-ref cid-to-object-table cid seteq)))
+         (seteq)
+         lst-of-cid))
+  
 (define (update-cid-record cid orec)
   (hash-update! cid-to-object-table
                 cid
@@ -390,26 +402,42 @@
                (lazy-ref:weak id (object-record-obj orec))
                (lazy-ref id (weak-box-value (object-record-obj orec)))))]
         [else (raise-argument-error 'make-lazyref "(is-a?/c saved-object%)" o)]))
-             
-(struct object-record ([obj #:mutable] holds semaphore reload-semaphore [wants-reload? #:mutable] id)
+ 
+(struct object-record ([obj #:mutable]           ; (weakbox (box (instanceof saved-object%)))
+                       holds                     ; (hasheq Thread Nat)
+                       semaphore                 ; Semaphore
+                       reload-semaphore          ; Semaphore
+                       [wants-reload? #:mutable] ; Bool
+                       id)                       ; OID
   #:transparent)
 
+;; (make-object-record o) constructs an ObjectRecord for object o
+
+;; make-object-record: SavedObject -> ObjectRecord
+;; PRE: should never be used if there's already an ObjectRecord for o [not checked]
 (define (make-object-record o)
-  (object-record (make-weak-box (box o)) (make-hasheq) (make-semaphore 1) (make-semaphore 1) #f (send o get-id)))
+  (object-record (make-weak-box (box o))
+                 (make-hasheq)
+                 (make-semaphore 1)
+                 (make-semaphore 1)
+                 #f
+                 (send o get-id)))
+
 (define null-record (object-record (make-weak-box #f) #f #f #f #f #f))
 
 ;; get-object-record : SavedObject -> ObjectRecord
-
+;; POST: will create a new ObjectRecord if o does not already have one
 (define (get-object-record o)
-  (semaphore-wait object-table/semaphore)
-  (let ([orec (hash-ref! object-table
-                         (send o get-id)
-                         (λ () (make-object-record o)))])
-    (update-cid-record (send o get-cid) orec)
-    (semaphore-post object-table/semaphore)
-    (unless (box? (weak-box-value (object-record-obj orec)))
-      (set-object-record-obj! orec  (make-weak-box (box o))))
-    orec))
+  (call-with-semaphore
+   object-table/semaphore
+   (λ ()
+     (let ([orec (hash-ref! object-table
+                            (send o get-id)
+                            (λ () (make-object-record o)))])
+       (update-cid-record (send o get-cid) orec)
+       (unless (box? (weak-box-value (object-record-obj orec)))
+         (set-object-record-obj! orec  (make-weak-box (box o))))
+       orec))))
 
 
 #||||||||||||||||||||||||||||||||||
@@ -418,35 +446,47 @@
 
 (define object-reload-channel (make-channel))
 (define object-reload-thread #f)
+
+;; start-obejct-reload-thread! -> Void
+;; PRE: object reload thread is not running
+;; POST: object reload thread is running
 (define (start-object-reload-thread!)
+  (when object-reload-thread
+    (error 'start-object-reload-thread! "reload thread is already running"))
   (set! object-reload-thread
         (thread
          (λ ()
-           (let loop ()
-             (define record-set (thread-receive))
-             (for ([orec (in-set record-set)])
-               (semaphore-wait (object-record-reload-semaphore orec))
-               (semaphore-wait (object-record-semaphore orec))
-               (unless (hash-empty? (object-record-holds orec))
-                 (set-object-record-wants-reload?! orec #t)
-                 (semaphore-post (object-record-semaphore orec))
-                 (sync object-reload-channel))
-               (let ([object-box (weak-box-value (object-record-obj orec))])
-                 (when object-box
-                   (let* ([old-object (unbox object-box)]
-                          [new-object (hot-reload old-object)])
-                     (set-object-record-wants-reload?! orec #f)
-                     (set-box! object-box new-object)
-                     (semaphore-post (object-record-semaphore orec))
-                     (semaphore-post (object-record-reload-semaphore orec))))))
-             (log-message (current-logger) 'debug 'rackmud
-                          "Finished reloading modified objects")
-             (loop))))))
+           (with-handlers ([exn:break? void])
+             (let loop ()
+               (define record-set (thread-receive))
+               (for ([orec (in-set record-set)])
+                 (semaphore-wait (object-record-reload-semaphore orec))
+                 (semaphore-wait (object-record-semaphore orec))
+                 (unless (hash-empty? (object-record-holds orec))
+                   (set-object-record-wants-reload?! orec #t)
+                   (semaphore-post (object-record-semaphore orec))
+                   (sync object-reload-channel))
+                 (let ([object-box (weak-box-value (object-record-obj orec))])
+                   (when object-box
+                     (let* ([old-object (unbox object-box)]
+                            [new-object (hot-reload old-object)])
+                       (set-object-record-wants-reload?! orec #f)
+                       (set-box! object-box new-object)
+                       (semaphore-post (object-record-semaphore orec))
+                       (semaphore-post (object-record-reload-semaphore orec))))))
+               (log-message (current-logger) 'debug 'rackmud
+                            "Finished reloading modified objects")
+               (loop)))))))
 
 (define (stop-object-reload-thread!)
-  (kill-thread object-reload-thread)
+  (unless object-reload-thread
+    (error 'stop-object-reload-thread! "reload thread is not running"))
+  (break-thread object-reload-thread)
+  (thread-wait object-reload-thread)
   (set! object-reload-thread #f))
-         
+
+
+;; not used anymore???
 (define (trigger-reload! o)
   (thread-send object-reload-thread (list (get-object-record (maybe-lazy-deref o)))))
 
@@ -474,40 +514,57 @@
   
   (thread-send object-reload-thread objects-needing-reload))
 
+;; (add-thread-to-object orec) marks the current thread as holding a non-exclusive lock
+;;   on orec.  Objects can only be reloaded when no threads are holding the thread.
+;;   If the object is waiting for a reload, this call will block until the reload is complete.
+
 (define (add-thread-to-object orec)
-  ;(semaphore-wait (object-record-semaphore orec))
-  ;(if (set-member? (object-record-holds orec) (current-thread))
-   ;   (semaphore-post (object-record-semaphore orec))
-  ;    (begin
-  ;(semaphore-post (object-record-semaphore orec))
   (let ([started? #f])
-  (dynamic-wind
-   (lambda () (if started?
-                  (raise
-                   (make-exn:fail:contract:continuation
-                    "illegal jump into saved-object method after it already returned"
-                    (current-continuation-marks)))
-                  (begin
-                    (semaphore-wait (object-record-reload-semaphore orec))
-                    (semaphore-wait (object-record-semaphore orec)))))
-   (lambda ()
-     (set! started? #t)
-     (hash-update! (object-record-holds orec) (current-thread)
-                   add1 0))
-   (lambda ()
-     (semaphore-post (object-record-semaphore orec))
-     (semaphore-post (object-record-reload-semaphore orec))))))
+    (dynamic-wind 
+     (lambda () (if started?
+                    (raise
+                     (make-exn:fail:contract:continuation
+                      "illegal jump into saved-object method after it already returned"
+                      (current-continuation-marks)))
+                    (begin
+                      (semaphore-wait (object-record-reload-semaphore orec))
+                      (semaphore-wait (object-record-semaphore orec)))))
+     (lambda ()
+       (set! started? #t)
+       (hash-update! (object-record-holds orec) (current-thread)
+                     add1 0))
+     (lambda ()
+       (semaphore-post (object-record-semaphore orec))
+       (semaphore-post (object-record-reload-semaphore orec))))))
+
+;; (remove-thread-from-object orec) removes (one of) the hold(s) that the current thread has on
+;;   the object represented by orec.  If the object is marked for reload, and this is final
+;;   hold on that object, then it will be reloaded.
 
 (define (remove-thread-from-object orec)
-  (semaphore-wait (object-record-semaphore orec))
-  (let ([v (hash-ref (object-record-holds orec) (current-thread) 0)])
-    (if (> v 1)
-        (hash-set! (object-record-holds orec) (current-thread) (sub1 v))
-        (hash-remove! (object-record-holds orec) (current-thread))))
-  (if (and (hash-empty? (object-record-holds orec))
-           (object-record-wants-reload? orec))
-      (channel-put object-reload-channel orec)
-      (semaphore-post (object-record-semaphore orec))))
+  (let ([started? #f]
+        [passed-semaphore? #f])
+    (dynamic-wind ; custom wind because we might not want to unlock
+     (λ () (if started?
+               (raise
+                (make-exn:fail:contract:continuation
+                 "illegal jump into saved-object method after it already returned"
+                 (current-continuation-marks)))
+               (semaphore-wait (object-record-semaphore orec))))
+     (λ () (set! started? #t)
+       (let ([v (hash-ref (object-record-holds orec) (current-thread) 0)])
+         (if (> v 1)
+             (hash-set! (object-record-holds orec) (current-thread) (sub1 v))
+             (hash-remove! (object-record-holds orec) (current-thread))))
+       (when (and (hash-empty? (object-record-holds orec))
+                  (object-record-wants-reload? orec))
+         (begin
+           (channel-put object-reload-channel orec)
+           ;; is it possible thread is killed between channel put and setting var???
+           (set! passed-semaphore? #t))))
+     (λ ()
+       (unless passed-semaphore?
+         (semaphore-post (object-record-semaphore orec)))))))
 
 
 #||||||||||||||||||||||||||||||||||
@@ -598,37 +655,38 @@
 (define-syntax this/rackmud
   (make-parameter-rename-transformer #'this/rackmud/param))             
 
+;; (do-object-action orig-stx the-thing/pre obj-stx the-thing/post) generates a syntax object of the
+;;   form (@the-thing/pre (lazy-deref obj-stx) @the-thing/post), with a wrapper that locks the
+;;   resulting object against reloads, and unlocks it again afterword.  
+
 (define-for-syntax (do-object-action orig-stx the-thing/pre obj-stx the-thing/post)
-  (if (eq? 'this (syntax-e obj-stx))
-      (quasisyntax/loc orig-stx
-        ((unsyntax-splicing the-thing/pre) this (unsyntax-splicing the-thing/post)))
-      (quasisyntax/loc orig-stx
-        (let ([o (unsyntax obj-stx)])
-          (if (lazy-ref? o)
-              (let ([started? #f]
-                    [ended? #f]
-                    [o2 (lazy-deref o)]
-                    [orec (hash-ref object-table (lazy-ref-id o))])
-                (dynamic-wind
-                 (lambda ()
-                   (if started?
-                                (raise
-                                 (make-exn:fail:contract:continuation
-                                  "illegal jump into saved-object method after it already returned"
-                                  (current-continuation-marks)))
-                                (add-thread-to-object orec)))
-                 (lambda ()
-                   (call-with-continuation-barrier
-                    (lambda ()
-                      (set! started? #t)
-                      (begin0
-                        ((unsyntax-splicing the-thing/pre)
-                         o2
-                         (unsyntax-splicing the-thing/post))
-                        (set! ended? #t)))))
-                 (lambda ()
-                   (remove-thread-from-object orec))))
-              ((unsyntax-splicing the-thing/pre)  o (unsyntax-splicing the-thing/post)))))))
+  (quasisyntax/loc orig-stx
+    (let ([o (unsyntax obj-stx)])
+      (if (lazy-ref? o)
+          (let ([started? #f]
+                [ended? #f]
+                [o2 (lazy-deref o)]
+                [orec (hash-ref object-table (lazy-ref-id o))])
+            (dynamic-wind
+             (lambda ()
+               (if started?
+                   (raise
+                    (make-exn:fail:contract:continuation
+                     "illegal jump into saved-object method after it already returned"
+                     (current-continuation-marks)))
+                   (add-thread-to-object orec)))
+             (lambda ()
+               (call-with-continuation-barrier
+                (lambda ()
+                  (set! started? #t)
+                  (begin0
+                    ((unsyntax-splicing the-thing/pre)
+                     o2
+                     (unsyntax-splicing the-thing/post))
+                    (set! ended? #t)))))
+             (lambda ()
+               (remove-thread-from-object orec))))
+          ((unsyntax-splicing the-thing/pre)  o (unsyntax-splicing the-thing/post))))))
 
 (define-syntax (send/rackmud stx)
   (syntax-case stx ()
@@ -1205,26 +1263,20 @@
                                   var-load ...
                                   unsaved-load ...
                                   (super load-live-state vars))
-                                 def-or-exp ...)])
-                       (λ (%)
-                         (define new% (m %))
-                         (semaphore-wait cid-tables/semaphore)
-                         (let ([ancestors (cons name
-                                                (cons new%
-                                                      (hash-ref class-to-ancestors-table % `(,%))))])
-                           #|(for ([ancestor (in-list ancestors)])
-                             (hash-update! class-to-descendants-table ancestor
-                                           (λ (lst-of-desc)
-                                             (cons new% lst-of-desc))
-                                           null))|#
-                           (hash-set! class-to-ancestors-table new% ancestors))
-                         (semaphore-post cid-tables/semaphore)
-                         new%))))
-                   (semaphore-wait cid-tables/semaphore)
-                   (hash-set! class-to-cid-table name cid)
-                   (semaphore-post cid-tables/semaphore)
-                   )))))))
-     ]))
+                                def-or-exp ...)])
+                         (λ (%)
+                           (define new% (m %))
+                           (call-with-semaphore
+                            cid-tables/semaphore
+                            (λ ()
+                              (let ([ancestors
+                                     (cons name
+                                           (cons new%
+                                                 (hash-ref class-to-ancestors-table % `(,%))))])
+                                (hash-set! class-to-ancestors-table new% ancestors))))
+                           new%))))
+                   (call-with-semaphore cid-tables/semaphore
+                                        (λ () (hash-set! class-to-cid-table name cid))))))))))]))
 
 (define-for-syntax (define-saved-class/priv orig-stx who name super-expression interface-expr-list
                      body-list)
@@ -1433,36 +1485,35 @@
                 (hash-set! class-to-cid-table name cid)
                 (let* ([ancestors (cons name (hash-ref class-to-ancestors-table se `(,se)))]
                        [ancestors/cid (filter (λ (x) x)
-                                                (map (λ (%)
-                                                       (hash-ref class-to-cid-table % #f))
-                                                     ancestors))])
-                  
-#|                  (for ([ancestor (in-list ancestors)])
-                    (hash-update! class-to-descendants-table ancestor
-                                  (λ (lst-of-desc)
-                                    (cons name lst-of-desc))
-                                  null))|#
-                  
-                  (database-update-class-hierarchy cid ancestors/cid)
-                  
-                  (hash-set! class-to-ancestors-table name ancestors))
-                (semaphore-post cid-tables/semaphore)
-                ))))))))
+                                              (map (λ (%)
+                                                     (hash-ref class-to-cid-table % #f))
+                                                   ancestors))])
+                  (hash-set! class-to-ancestors-table name ancestors)
+                  (semaphore-post cid-tables/semaphore)
+                  (database-update-class-hierarchy cid ancestors/cid))))))))))
 
 
 #|||||||||||||||||||||||||||||||||||||||||||||||
                  WEBAUTH STUFF
 ||||||||||||||||||||||||||||||||||||||||||||||||#
 
+;; (make-authorization obj [duration]) produces a JWT and accompanying refresh token with
+;;  the given duration (in seconds) with an id equal to [obj]'s oid.  A duration of #f (the default)
+;;  means that the refresh token will not expire.  A duration of 'session means the same thing, except
+;;  that the refresh token will be saved in memory only, and not saved between browser sessions.
+
+;; make-authorization (instanceof saved-object%) [(U #f 'session Nat) = #f] -> (values JWT Bytes)
 (define (make-authorization obj [duration #f])
   (let ([duration/actual (if (symbol? duration) #f duration)]
         [session? (eq? duration 'session)])
     (values (make-auth-jwt (send/rackmud obj get-id))
             (database-make-token (send/rackmud obj get-id) duration/actual session?))))
 
+;; get-authorization: JWT Bytes -> (values SavedObject (or Nat #f) (or JWT #f) (or Bytes #f)
+
 (define (get-authorization jwt token)
   (let ([jwt-id (and (string? jwt) (verify-auth-jwt jwt))])
-    (if jwt-id
+    (if (oid? jwt-id)
         (values (lazy-ref jwt-id #f) #f #f #f)
         (let-values ([(oid duration new-jwt new-token)
                       (refresh-jwt token)])
@@ -1492,7 +1543,6 @@
 
 (define (save-all-objects)
   (semaphore-wait object-table/semaphore)
-  ;(displayln "Starting save transaction...")
   (database-start-transaction!)
   (with-handlers ([exn? (λ (e)
                           (eprintf "Save failed, error incoming ~a\n" e)
@@ -1504,22 +1554,7 @@
           (when o (save-object (unbox o)))))))
   (semaphore-post object-table/semaphore)
 
-  #|(semaphore-wait cid-tables/semaphore)
-  (for ([(% lst-of-desc) (in-hash class-to-descendants-table)])
-    (let* ([cid (hash-ref class-to-cid-table % #f)]
-           [lst-of-desc/cid (filter (λ (x) x)
-                                   (map (λ (%)
-                                          (hash-ref class-to-cid-table % #f))
-                                   lst-of-desc))]
-           [lst-of-ansc/cid (filter (λ (x) x)
-                                    (map (λ (%)
-                                            (hash-ref class-to-cid-table % #f))
-                                         (hash-ref class-to-ancestors-table % (λ () (list %)))))])
-      (when cid (database-update-class-hierarchy cid lst-of-desc/cid lst-of-ansc/cid))))
-  (semaphore-post cid-tables/semaphore)|#
-  (database-commit-transaction!)
-  ;(displayln "Save transaction committed")
-  )
+  (database-commit-transaction!))
 
 
 (define (database-setup db-type db-port db-sock db-srv db-db db-user db-pass)
@@ -1527,7 +1562,6 @@
    
 
 (define (hot-reload old-object)
-  ;(log-message (current-logger) 'debug 'rackmud (format "Hot Reload: ~v" old-object) #f #f)
   (let ([new-object (new (load-class (send old-object get-cid))
                          [id (send old-object get-id)]
                          [name (get-field name old-object)])])
@@ -1535,12 +1569,10 @@
     (send new-object on-hot-reload)
     new-object))
     
-;; get-unloaded-object: Nat -> (U (Instanceof MudObject%) #f)
+;; get-unloaded-object: Nat -> (U (instanceof saved-object%) #f)
 (define (get-unloaded-object id)
-  (unless (exact-nonnegative-integer? id)
-    (raise-argument-error 'database-load-object "exact-nonnegative-integer?" id))
-  ;(unless (database-connected?) (error "database not connected"))
-  ;"SELECT cid, created, saved, name, deleted, fields FROM objects WHERE oid = ~a"
+  (unless (oid? id)
+    (raise-argument-error 'database-load-object "oid?" id))
   (define-values
     [cid created saved fields/json]
     (database-get-object id))
@@ -1591,9 +1623,7 @@
 
 
 (define (find-objects-by-class % #:include-ancestor? [include-ancestor? #f])
-  (semaphore-wait cid-tables/semaphore)
   (define cid (hash-ref class-to-cid-table % #f))
-  (semaphore-post cid-tables/semaphore)
   (define oids
     (if include-ancestor?
         (database-find-objects-by-ancestor-class cid)
