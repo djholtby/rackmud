@@ -171,4 +171,18 @@
 (define (rackmud:websock-client-path:RO) (rackmud:websock-client-path))
 (define (rackmud:web-root-path:RO) (rackmud:web-root-path))
 (define (rackmud:proxy-mode:RO) (rackmud:proxy-mode))
-(module reader syntax/module-reader rackmud/main)
+(module reader syntax/module-reader
+  rackmud
+  #:wrapper2
+  (λ (in rd stx?)
+    (let* ([stx (rd in)]
+           [r (syntax-case stx ()
+                [(module name lang (#%module-begin . body))
+                 (quasisyntax/loc stx
+                   (module name lang
+                     (#%module-begin
+                      ; add new stuff here
+                      . body)))])])
+      (if stx? r (syntax->datum r)))))
+                 
+    

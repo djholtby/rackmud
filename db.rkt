@@ -123,7 +123,8 @@
 
 (define select-field-ids-statement
   (virtual-statement
-   "SELECT get_field_index($1, field_name) as idx FROM (SELECT unnest($2::text[]) as field_name) AS t"))
+   "SELECT get_field_index($1, field_name) as idx FROM (SELECT unnest($2::text[]) as field_name)\
+      AS t"))
 
 
 (define new-object-stmt
@@ -134,7 +135,8 @@
   (virtual-statement
    "delete from object_archive arch where\
     NOT EXISTS (select o.oid, o.saved from objects o where o.oid=arch.oid and o.saved=arch.saved) AND\
-    NOT EXISTS (select * from snapshot_fields sf where sf.oid = arch.oid AND sf.saved = arch.saved)"))
+    NOT EXISTS (select * from snapshot_fields sf where sf.oid = arch.oid AND sf.saved = arch.saved)"
+   ))
 
 ;(define save-object-stmt
 ;  (virtual-statement
@@ -152,7 +154,8 @@
 
 (define get-snapshot-stmt
   (virtual-statement
-   "SELECT sid, freq, hourly, daily, weekly, monthly, yearly, taken from snapshot order by taken desc"))
+   "SELECT sid, freq, hourly, daily, weekly, monthly, \
+    yearly, taken from snapshot order by taken desc"))
 
 (define delete-snapshot-stmt
   (virtual-statement
@@ -160,7 +163,8 @@
 
 (define update-snapshot-stmt
   (virtual-statement
-   "UPDATE snapshot set freq = $2, hourly = $3, daily = $4, weekly = $5, monthly = $6 where sid = $1"))
+   "UPDATE snapshot set freq = $2, hourly = $3, daily = $4, weekly = $5, monthly = $6 \
+    where sid = $1"))
 
 
 (define search-tags-stmt
@@ -331,8 +335,8 @@
 (define cid-map (make-hash))
 
 #|! 
-(database-get-cid! class-name module-name) retrieves the classid for the named class variable defined in the named module
-  if the database does not contain this key, a new row is inserted
+(database-get-cid! class-name module-name) retrieves the classid for the named class variable defined
+  in the named module if the database does not contain this key, a new row is inserted
 
 database-get-cid! : Symbol Path -> Nat
 |#
@@ -350,7 +354,8 @@ database-get-cid! : Symbol Path -> Nat
 
 (define (file->cids module-name)
   (when (not (database-connected?)) (error 'file->cids "database not connected"))
-  (query-list _dbc_ module-to-cid-query (path->string (relative-module-path (make-resolved-module-path module-name)))))
+  (query-list _dbc_ module-to-cid-query
+              (path->string (relative-module-path (make-resolved-module-path module-name)))))
 
 
 (define (load-class cid)
@@ -458,7 +463,8 @@ database-get-cid! : Symbol Path -> Nat
       (query-list _dbc_ field-search-statement/@> full-json-path (hasheq key value))
       (query-list _dbc_ field-search-statement/@> full-json-path (hasheq 'key key 'value value))))
 
-(define (field-search-table/key+value/list full-json-path keys values #:symbol-table? [json-table? #t])
+(define (field-search-table/key+value/list full-json-path keys values
+                                           #:symbol-table? [json-table? #t])
   (if json-table?
       (query-list _dbc_ field-search-statement/@> full-json-path (make-hasheq (map cons keys values)))
       (query-list _dbc_ field-search-statement/@> full-json-path (map (λ (k v)
@@ -507,19 +513,20 @@ database-get-cid! : Symbol Path -> Nat
 
 (define (database-create-field-index full-field-name [type 'simple] [depth 0])
   (let ([index-name (simplify-name full-field-name)]
-        [search-path (string-join (map (λ (s) (format "'~a'" s)) (cons full-field-name (make-list depth "value"))) ", ")])
+        [search-path (string-join (map (λ (s) (format "'~a'" s))
+                                       (cons full-field-name (make-list depth "value"))) ", ")])
     (case type
       [(simple number string boolean char bytes moment object)
        (query-exec
         _dbc_
-        (format "CREATE INDEX IF NOT EXISTS object_field_~a ON objects USING BTREE ((fields#>array[~a])) WHERE\
-                 ((fields#>array[~a])) IS NOT NULL"
+        (format "CREATE INDEX IF NOT EXISTS object_field_~a ON objects USING BTREE \
+                 ((fields#>array[~a])) WHERE ((fields#>array[~a])) IS NOT NULL"
                 index-name search-path search-path))]
       [(list vector symbol-table set hash json)
        (query-exec
         _dbc_
-        (format "CREATE INDEX IF NOT EXISTS object_field_~a ON objects USING GIN ((fields#>array[~a])) WHERE\
-                 ((fields#>array[~a])) IS NOT NULL"
+        (format "CREATE INDEX IF NOT EXISTS object_field_~a ON objects USING GIN \
+                 ((fields#>array[~a])) WHERE ((fields#>array[~a])) IS NOT NULL"
                 index-name search-path search-path))]
       [else (raise-argument-error 'database-create-field-index "(or/c 'simple 'json)" type)])))
 
@@ -580,7 +587,8 @@ database-get-cid! : Symbol Path -> Nat
         (if (and (cons? strings) (cons? (cdr strings)) (null? (cddr strings)) ; 2 element list
                  (uuid-string? (car strings)) (uuid-string? (cadr strings)))  ; both are UUIDs
             (values (car strings) (cadr strings))
-            (and (log-warning "received invalid refresh token value: ~a" maybe-token) (values #f #f))))
+            (and (log-warning "received invalid refresh token value: ~a" maybe-token)
+                 (values #f #f))))
       (values #f #f)))       ; cookie was not found
 
 

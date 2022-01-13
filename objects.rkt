@@ -69,7 +69,8 @@
        LAZY REFERENCE STUFF
 |||||||||||||||||||||||||||||||||||#
 (define (oid? v)
-  (exact-nonnegative-integer? v))
+  (or (exact-nonnegative-integer? v)
+      (and (symbol? v) (not (symbol-interned? v)))))
 
 (define (mud-ref-print lr port mode)
   (case mode
@@ -177,15 +178,16 @@
      `#hasheq((|(RKT)| . "vbox")
               (value . ,(value->jsexpr (vbox-ref v))))]
     [(lazy-ref? v)
-     `#hasheq((|(RKT)| . "lazy-ref")
-              (weak? . ,(lazy-ref:weak? v))
-              (value . ,(lazy-ref-id v)))]
+     (and (number? (lazy-ref-id v))
+          `#hasheq((|(RKT)| . "lazy-ref")
+                   (weak? . ,(lazy-ref:weak? v))
+                   (value . ,(lazy-ref-id v))))]
     [(bytes? v)
      (string-append "#b" (bytes->string/utf-8 (base64-encode v "")))]
     [(char? v)
      `#hasheq((|(RKT)| . "char")
               (value . ,(char->integer v)))]
-    [(symbol? v) (symbol->string v)]
+    [(symbol? v) (string-append (if (symbol-unreadable? v) "#U" "#S") (symbol->string v))]
     [(void? v) "#void"]
     [(eq? undefined v) "#undef"]
     [(string? v) (string-append "#s" v)]
@@ -242,7 +244,9 @@
        [(#\n) (string->number (substring jse 2))]
        [(#\v) (void)]
        [(#\u) undefined]
+       [(#\U) (string->unreadable-symbol (substring jse 2))]
        [(#\s) (substring jse 2)]
+       [(#\S) (string->symbol (substring jse 2))]
        [(#\m) (iso8601/tzid->moment (substring jse 2))]
        [(#\b) (base64-decode (string->bytes/utf-8 (substring jse 2)))])]
     [(? string?) (string->symbol jse)]
