@@ -2,7 +2,8 @@
 
 (require racket/class racket/list racket/hash racket/struct racket/bool racket/string racket/match
          racket/local racket/set racket/contract
-         (for-syntax racket/base racket/syntax) syntax/modresolve  racket/stxparam racket/splicing
+         (for-syntax racket/base racket/syntax syntax/parse) syntax/modresolve  racket/stxparam
+         racket/splicing
          racket/rerequire racket/undefined
          racket/vector)
 
@@ -864,39 +865,45 @@
   (is-a?-ctc/rackmud type))
 
 (define-syntax (new/rackmud stx)
-  (syntax-case stx ()
-    [(_ cls-expr (id arg) ...)
-     #'(let* ([cv cls-expr]
-              [o (new cv (id arg) ...)])
-         (when (subclass? cv saved-object%)
-           (rackmud-new-object o))
-         (if (subclass? cv saved-object%)  (make-lazyref o) o))]))
+  (syntax-parse stx 
+    [(_ cls-expr:expr (id:id arg:expr) ... (~optional (~seq (~and #:temporary k))))
+     (with-syntax ([tmp? (and (attribute k) #t)])
+       #'(let* ([cv cls-expr]
+                [o (new cv (id arg) ...)])
+           (when (subclass? cv saved-object%)
+             (rackmud-new-object o tmp?))
+           (if (subclass? cv saved-object%)  (make-lazyref o) o)))]))
 
 
 (define-syntax (instantiate/rackmud stx)
-  (syntax-case stx ()
-    [(_ cls-expr (by-pos-expr ...) (id by-name-expr) ...)
-     #'(let ([cv cls-expr]
-             [o (instantiate cv (by-pos-expr ...) (id by-name-expr) ...)])
-         (when (subclass? cv saved-object%)
-           (rackmud-new-object o))
-         (if (subclass? cv saved-object%)  (make-lazyref o) o))]))
+  (syntax-parse stx 
+    [(_ cls-expr:expr
+        (by-pos-expr:expr ...)
+        (id:id by-name-expr:expr) ...
+        (~optional (~seq (~and #:temporary k))))
+     (with-syntax ([tmp? (and (attribute k) #t)])
+       #'(let ([cv cls-expr]
+               [o (instantiate cv (by-pos-expr ...) (id by-name-expr) ...)])
+           (when (subclass? cv saved-object%)
+             (rackmud-new-object o tmp?))
+           (if (subclass? cv saved-object%)  (make-lazyref o) o)))]))
 
 
 (define-syntax (make-object/rackmud stx)
-  (syntax-case stx ()
-    [(_ cls-expr by-pos-expr ...)
-     #'(let ([cv cls-expr]
-             [o (make-object cv by-pos-expr ...)])
-         (when (subclass? cv saved-object%)
-           (rackmud-new-object o))
-         (if (subclass? cv saved-object%)  (make-lazyref o) o))]))
+  (syntax-parse stx 
+    [(_ cls-expr:expr by-pos-expr:expr ... (~optional (~seq (~and #:temporary k))))
+     (with-syntax ([tmp? (and (attribute k) #t)])
+       #'(let ([cv cls-expr]
+               [o (make-object cv by-pos-expr ...)])
+           (when (subclass? cv saved-object%)
+             (rackmud-new-object o tmp?))
+           (if (subclass? cv saved-object%)  (make-lazyref o) o)))]))
 
 
-(define (rackmud-new-object o)
+(define (rackmud-new-object o [tmp? #f])
   (unless (is-a? o saved-object%)
     (raise-argument-error 'rackmud-new-object "(is-a?/c saved-object%)" o))
-  (let-values ([(oid created) (database-new-object (send o get-cid))])
+  (let-values ([(oid created) (database-new-object (send o get-cid) tmp?)])
     (send o set-id! oid)
     (set-field! created o created)
     (send o on-create)

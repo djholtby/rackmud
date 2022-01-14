@@ -2,9 +2,11 @@
 
 (require racket/path racket/list)
 
-(provide lib-path filepath path-begins-with? filepath filepath/index set-lib-path! relative-module-path)
+(provide lib-path filepath path-begins-with? filepath filepath/index set-lib-path!
+         relative-module-path)
 
 (define lib-path #f)
+;(path->directory-path (simplify-path (path->complete-path (string->path ".")))))
 
 (define (set-lib-path! p)
   (unless (or (path? p)
@@ -18,11 +20,14 @@
   (variable-reference->module-path-index (#%variable-reference)))
 
 (define (relative-module-path mod-path)
-  (unless lib-path
-    (error 'define-saved-class "lib-path not set when evaluating ~a" mod-path))
   (let ([mpath (resolved-module-path-name mod-path)])
-    (cond [(path? mpath) (find-relative-path lib-path mpath)]
-          [(cons? mpath)  (cons (find-relative-path lib-path (car mpath)) (cdr mpath))])))
+    (cond [(path? mpath) (if lib-path
+                             (find-relative-path lib-path mpath)
+                             mpath)]
+          [(cons? mpath)  (cons (if lib-path
+                                    (find-relative-path lib-path (car mpath))
+                                    (car mpath))
+                                (cdr mpath))])))
 
 (define (path-begins-with? path dir-path)
   (define-values (base name must-be-dir?) (split-path path))

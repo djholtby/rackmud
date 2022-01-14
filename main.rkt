@@ -181,7 +181,9 @@
                  (quasisyntax/loc stx
                    (module name lang
                      (#%module-begin
-                      ; add new stuff here
+                      (module configure-runtime racket/base
+                        (require (only-in rackmud/db rackmud-database-stubmode?))
+                        (rackmud-database-stubmode? #t))
                       . body)))])])
       (if stx? r (syntax->datum r)))))
                  

@@ -1,8 +1,7 @@
 #lang racket/base
 
 (require db racket/format gregor gregor/period
-         racket/match racket/list racket/set "lib-path.rkt" racket/rerequire uuid racket/string sha
-         )
+         racket/match racket/list "lib-path.rkt" racket/rerequire uuid racket/string sha)
 
 (provide make-rackmud-db-connection make-rackmud-db-pool rackmud-db-version database-log
          database-save-object database-new-object database-get-object database-get-singleton
@@ -37,6 +36,8 @@
          database-prune-snapshots
          database-take-snapshot-as-needed
          database-snapshot-history
+
+         rackmud-database-stubmode?
          )
 
 (define (make-rackmud-db-pool db-port db-sock db-srv db-db db-user db-pass)
@@ -68,7 +69,7 @@
 
 
 (define _dbc_ #f)
-
+(define rackmud-database-stubmode? (make-parameter #f))
 
 (define (sql->moment s)
   (match-define
@@ -278,7 +279,8 @@
    "SELECT cid from classes where module = $1"))
 
 (define (database-connected?)
-  (connection? _dbc_))
+  (or (rackmud-database-stubmode?)
+      (connection? _dbc_)))
 
 
 (define (database-disconnect)
@@ -313,11 +315,12 @@
              (loop)))))|#
 (define (database-log level module code description)
   ;(-> log-level/c (or/c string? false/c) (or/c exact-nonnegative-integer? false/c) string? void?)
-  (query-exec _dbc_ log-stmt
-              (log-level->int level)
-              (if module (if (string? module) module (format "~a" module)) sql-null)
-              (or code sql-null)
-              (or description sql-null)))
+  (unless (rackmud-database-stubmode?)
+    (query-exec _dbc_ log-stmt
+                (log-level->int level)
+                (if module (if (string? module) module (format "~a" module)) sql-null)
+                (or code sql-null)
+                (or description sql-null))))
               
 
 (define (database-disconnect!)
@@ -346,7 +349,10 @@ database-get-cid! : Symbol Path -> Nat
   (unless cid
     (define class-string (symbol->string class-name))
     (define module-string (path->string module-name))
-    (set! cid (query-value _dbc_ get-classid-stmt module-string class-string))
+    (set! cid
+          (cond [(rackmud-database-stubmode?)
+                 (string->uninterned-symbol (format "~a::~a" module-string class-string))]
+                [else (query-value _dbc_ get-classid-stmt module-string class-string)]))
     (hash-set! cid-map (cons class-name module-name) cid))
   (unless cid (error 'database-get-cid! "could not find or create new classid"))
   cid)
@@ -354,8 +360,10 @@ database-get-cid! : Symbol Path -> Nat
 
 (define (file->cids module-name)
   (when (not (database-connected?)) (error 'file->cids "database not connected"))
-  (query-list _dbc_ module-to-cid-query
-              (path->string (relative-module-path (make-resolved-module-path module-name)))))
+  (cond [(rackmud-database-stubmode?) null]
+        [else
+         (query-list _dbc_ module-to-cid-query
+                     (path->string (relative-module-path (make-resolved-module-path module-name))))]))
 
 
 (define (load-class cid)
@@ -473,43 +481,54 @@ database-get-cid! : Symbol Path -> Nat
 ;; value: string
 
 (define (field-search-array full-json-path value)
-  (eprintf "~a\n" full-json-path)
-  (if (string? value)
-      (query-list _dbc_ field-search-statement/? full-json-path value)
-      (query-list _dbc_ field-search-statement/@> full-json-path value)))
+  ;(eprintf "~a\n" full-json-path)
+    (cond [(not (database-connected?)) (error "database not connected")]
+        [(rackmud-database-stubmode?) null]
+        [(string? value)
+         (query-list _dbc_ field-search-statement/? full-json-path value)]
+        [else
+         (query-list _dbc_ field-search-statement/@> full-json-path value)]))
 
 ;; values (listof string)
 
 (define (field-search-array/and full-json-path values)
-  (if (andmap string? values)
-      (query-list _dbc_ field-search-statement/?& full-json-path values)
-      (query-list _dbc_ field-search-statement/@> full-json-path values)))
+    (cond [(not (database-connected?)) (error "database not connected")]
+        [(rackmud-database-stubmode?) null]
+        [(andmap string? values)
+         (query-list _dbc_ field-search-statement/?& full-json-path values)]
+        [else
+         (query-list _dbc_ field-search-statement/@> full-json-path values)]))
 
 ;; values (listof string)
 
 (define (field-search-array/or full-json-path values)
-  (if (andmap string? values)
-      (query-list _dbc_ field-search-statement/?\| full-json-path values)
-      (error "field search OR mode requires string keys")))
+  (cond [(not (database-connected?)) (error "database not connected")]
+        [(rackmud-database-stubmode?) null]
+        [(andmap string? values)
+         (query-list _dbc_ field-search-statement/?\| full-json-path values)]
+        [else (error "field search OR mode requires string keys")]))
 
 (define (field-search-op full-json-path op value)
-  (query-list _dbc_
-              (case op
-                [(=) field-search-statement/=]
-                [(!=) field-search-statement/!=]
-                [(<) field-search-statement/<]
-                [(<=) field-search-statement/<=]
-                [(>) field-search-statement/>]
-                [(>=) field-search-statement/>=]
-                [(like) field-search-statement/like]
-                [(not-like) field-search-statement/not-like]
-                [(~) field-search-statement/~]
-                [(!~) field-search-statement/!~]
-                [(~*) field-search-statement/~*]
-                [(!~*) field-search-statement/!~*]
-                [else (raise-argument-error 'field-search-table/op "valid-db-operator?" op)])
-              full-json-path
-              value))
+  (cond [(not (database-connected?)) (error "database not connected")]
+        [(rackmud-database-stubmode?) null]
+        [else
+         (query-list _dbc_
+                     (case op
+                       [(=) field-search-statement/=]
+                       [(!=) field-search-statement/!=]
+                       [(<) field-search-statement/<]
+                       [(<=) field-search-statement/<=]
+                       [(>) field-search-statement/>]
+                       [(>=) field-search-statement/>=]
+                       [(like) field-search-statement/like]
+                       [(not-like) field-search-statement/not-like]
+                       [(~) field-search-statement/~]
+                       [(!~) field-search-statement/!~]
+                       [(~*) field-search-statement/~*]
+                       [(!~*) field-search-statement/!~*]
+                       [else (raise-argument-error 'field-search-table/op "valid-db-operator?" op)])
+                     full-json-path
+                     value)]))
 
 (define (database-create-field-index full-field-name [type 'simple] [depth 0])
   (let ([index-name (simplify-name full-field-name)]
@@ -517,17 +536,19 @@ database-get-cid! : Symbol Path -> Nat
                                        (cons full-field-name (make-list depth "value"))) ", ")])
     (case type
       [(simple number string boolean char bytes moment object)
-       (query-exec
+       (unless (rackmud-database-stubmode?)
+         (query-exec
         _dbc_
         (format "CREATE INDEX IF NOT EXISTS object_field_~a ON objects USING BTREE \
                  ((fields#>array[~a])) WHERE ((fields#>array[~a])) IS NOT NULL"
-                index-name search-path search-path))]
+                index-name search-path search-path)))]
       [(list vector symbol-table set hash json)
-       (query-exec
-        _dbc_
-        (format "CREATE INDEX IF NOT EXISTS object_field_~a ON objects USING GIN \
+       (unless (rackmud-database-stubmode?)
+         (query-exec
+          _dbc_
+          (format "CREATE INDEX IF NOT EXISTS object_field_~a ON objects USING GIN \
                  ((fields#>array[~a])) WHERE ((fields#>array[~a])) IS NOT NULL"
-                index-name search-path search-path))]
+                  index-name search-path search-path)))]
       [else (raise-argument-error 'database-create-field-index "(or/c 'simple 'json)" type)])))
 
 
@@ -539,16 +560,20 @@ database-get-cid! : Symbol Path -> Nat
                         (string->list field-name))))
 
 (define (database-get-field-index-ids cid field-symbols)
-  (map (λ (name id)
-         (string->symbol (format "~a{~a}" (guard-field-name (symbol->string name)) id)))
-       field-symbols
-       (query-list _dbc_ select-field-ids-statement cid (map symbol->string field-symbols))))
+  (if (rackmud-database-stubmode?)
+      (map (λ (id)
+             (string->symbol (format "~a{~a}" (guard-field-name (symbol->string id)) cid)))
+           field-symbols)
+      (map (λ (name id)
+             (string->symbol (format "~a{~a}" (guard-field-name (symbol->string name)) id)))
+           field-symbols
+           (query-list _dbc_ select-field-ids-statement cid (map symbol->string field-symbols)))))
 
 ;; database-get-object: nat -> (values nat? moment? moment? jsexpr?)
 
 (define (database-get-object id)
-  (define obj (query-maybe-row _dbc_ object-load-stmt id))
-  
+  (define obj (and (database-connected?) (not (rackmud-database-stubmode?))
+                   (query-maybe-row _dbc_ object-load-stmt id)))
   ;    cid, created, saved, fields
   (if obj
       (values 
@@ -561,12 +586,27 @@ database-get-cid! : Symbol Path -> Nat
 
 (define (database-save-object oid fields)
   (unless (database-connected?) (error "database not connected"))
-  (sql->moment (query-value _dbc_ save-object-stmt oid fields)))
+  (cond [(rackmud-database-stubmode?) (now/moment)]
+        [else (sql->moment (query-value _dbc_ save-object-stmt oid fields))]))
 
-(define (database-new-object cid)
-  (let ([response (query-row _dbc_ new-object-stmt cid)])
-    (values (vector-ref response 0)
-            (sql->moment (vector-ref response 1)))))
+(define (database-new-object cid tmp?)
+  (cond [(or tmp? (rackmud-database-stubmode?))
+         (values (gensym) (now/moment))]
+        [else
+         (let ([response (query-row _dbc_ new-object-stmt cid)])
+           (values (vector-ref response 0)
+                   (sql->moment (vector-ref response 1))))]))
+
+
+(define (database-get-singleton cid)
+  (cond [(rackmud-database-stubmode?) #f]
+        [else 
+         (query-maybe-value _dbc_ get-singleton-stmt cid)]))
+
+(define (database-make-singleton oid cid)
+  (unless (rackmud-database-stubmode?)
+    (query-exec _dbc_ new-singleton-stmt oid cid)))
+
 
 ;; (database-make-token oid [duration]) generates a new token for object id OID
 ;;  that expires after duration seconds (or never expires if duration is #f)
@@ -623,11 +663,7 @@ database-get-cid! : Symbol Path -> Nat
 (define (database-expire-all-tokens oid)
   (query-exec _dbc_ expire-all-tokens-stmt oid))
 
-(define (database-get-singleton cid)
-  (query-maybe-value _dbc_ get-singleton-stmt cid))
 
-(define (database-make-singleton oid cid)
-  (query-exec _dbc_ new-singleton-stmt oid cid))
 
 
 (define (create-logfile-query-parameters levels subjects date-start date-end 
@@ -720,13 +756,16 @@ database-get-cid! : Symbol Path -> Nat
 
 
 (define (database-update-class-hierarchy cid lst-of-ansc)
-  (query-exec _dbc_ hierarchy-update-stmt lst-of-ansc cid))
+  (unless (rackmud-database-stubmode?)
+    (query-exec _dbc_ hierarchy-update-stmt lst-of-ansc cid)))
 
 (define (database-find-objects-by-ancestor-class cid)
-  (query-list _dbc_ find-object-by-ancestor-class-stmt (list cid)))
+  (cond [(rackmud-database-stubmode?) '()]
+        [else (query-list _dbc_ find-object-by-ancestor-class-stmt (list cid))]))
 
 (define (database-find-objects-by-class cid)
-  (query-list _dbc_ find-object-by-class-stmt cid))
+  (cond [(rackmud-database-stubmode?) '()]
+        [else (query-list _dbc_ find-object-by-class-stmt cid)]))
 
 
 
