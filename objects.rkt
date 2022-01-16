@@ -584,7 +584,6 @@
                         (init [id (void)])
                         (define _id_ id)
                         (define _self_ #f)
-                        (init-field  [name "object"])
                         (field      
                          ;; tags : (HashTable Symbol (Setof Symbol))
                          [last-access (now/moment/utc)]
@@ -907,7 +906,7 @@
     (send o set-id! oid)
     (set-field! created o created)
     (send o on-create)
-    (send o on-load)
+    ;(send o on-load)
     (save-object o)
     (make-lazyref o)))
 
@@ -1100,11 +1099,13 @@
                 [load-list (map (λ (id local-name)
                                   (with-syntax ([id id]
                                                 [local-name local-name])
-                                    #'(set! id (hash-ref vars local-name undefined))))
+                                    #'(when (hash-has-key? vars local-name)
+                                        (set! id (hash-ref vars local-name)))))
                                 saved-class-vars local-field-names)]
                 [load-unsaved-list (map (λ (id)
                                           (with-syntax ([id id])
-                                            #'(set! id (hash-ref vars 'id undefined))))
+                                            #'(when (hash-has-key? vars 'id)
+                                                (set! id (hash-ref vars 'id undefined)))))
                                         unsaved-class-vars)]
                 [lookup-by-id (make-hasheq (map
                                             (λ (id-stx local-identifier)
@@ -1574,8 +1575,7 @@
 
 (define (hot-reload old-object)
   (let ([new-object (new (load-class (send old-object get-cid))
-                         [id (send old-object get-id)]
-                         [name (get-field name old-object)])])
+                         [id (send old-object get-id)])])
     (send new-object load-live-state (send old-object copy-live-state))
     (send new-object on-hot-reload)
     new-object))
