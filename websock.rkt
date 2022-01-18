@@ -1,6 +1,6 @@
 #lang racket/base
 
-(require racket/class racket/port racket/bytes racket/list racket/match racket/string racket/set json
+(require racket/class racket/port racket/bytes racket/list racket/match racket/string json
          net/rfc6455 xml "websock-tags.rkt")
 (require telnet/connection telnet/mxp telnet/color)
 
@@ -84,9 +84,10 @@
                               [height (hash-ref msg/json 'height)])
                           (set-dimensions! width height)
                           (receive (list 'naws width height)))]
-                       [else (log-message (current-logger)
-                                          'debug 'rackmud:websock
-                                          (format "unhandled websocket message: ~v" msg/json) #f #f)]))
+                       [else (log-message
+                              (current-logger)
+                              'debug 'rackmud:websock
+                              (format "unhandled websocket message: ~v" msg/json) #f #f)]))
                    (loop))))))))
                                       
     
@@ -95,7 +96,8 @@
                                        (receive eof)
                                        (break-thread connection-thread 'hang-up))]
                       [exn? (λ (e)
-                              (log-message 'error 'rackmud
+                              (log-message (current-logger)
+                                           'error 'rackmud
                                            (format "~a\n~a" e (exn-message e))
                                            (exn-continuation-marks e)
                                            #f)
@@ -125,7 +127,7 @@
                 [(? symbol?)
                  (ws-send! websock-connection (jsexpr->string
                                                `#hasheq((type . "command")
-                                                        (command . ,(symbol->string msg)))))]                
+                                                        (command . ,(symbol->string msg)))))]
                 [(list 'text contents ...)
                  (parameterize ([tag-settings (get-markup-settings)])
                    (ws-send! websock-connection (jsexpr->string
@@ -211,7 +213,10 @@
                                                            (symbol->string (car pair))))
                                           (cdr pair))))
                               params)))
-                ,@(map loop body))])])))
+                ,@(map loop body))])]
+      [else (log-message (current-logger) 'warning 'rackmud
+                         (format "unknown response type: ~v" content) #f #f)
+            (format "~a" content)])))
 
 (define (xexpr->string/settings xpr)
   (xexpr->string (add-options-to-tags xpr)))
