@@ -13,7 +13,7 @@
          "../connections.rkt" "config.rkt" "new-setup.rkt" "../auth.rkt" "../parameters.rkt"
          "../menu.rkt")
 
-(require readline/rep-start)
+;(require readline/rep-start)
 
 
 (define (list=? a b)
@@ -53,7 +53,7 @@
 
 
 (when missing-file?
-  (set! cfg (rackmud-configure cfg #:in pre-readline-input-port))
+  (set! cfg (rackmud-configure cfg #:in (current-input-port)))
   (unless cfg
     (exit 1)))
 
@@ -240,7 +240,7 @@
     ;(displayln (send master-object setup-complete?))
     (unless (eq? #t (send master-object setup-complete?))
       (displayln "Master Object has a setup menu that has not been completed.  Starting menu...")
-      (send master-object run-setup-menu! pre-readline-input-port (current-output-port))))
+      (send master-object run-setup-menu! (current-input-port) (current-output-port))))
         
   (start-object-reload-thread!)
     
@@ -499,10 +499,6 @@
     (and (hash-ref cfg 'interactive #f)
          (thread
           (lambda ()
-            (define old-error-display-handler (error-display-handler))
-            (error-display-handler (λ (msg exn)
-                                     (unless (exn:break:terminate? exn)
-                                       (old-error-display-handler msg exn))))
             (define (shutdown! [code 0])
               (semaphore-post shutdown-semaphore)
               (kill-thread repl-thread))
@@ -511,17 +507,21 @@
               (channel-put rebuild-channel 'go))
               
             (parameterize ([current-namespace ns])
+              (namespace-require 'racket/interactive)
               (namespace-set-variable-value! 'shutdown! shutdown!)
               (namespace-set-variable-value! 'rebuild! rebuild!)
               (namespace-set-variable-value! 'exit shutdown!) ; override default exit
-              (let loop () 
-                (read-eval-print-loop) 
-                ;; runs if EOF breaks out of REPL
-                (cond[(in-tmux?) 
-                      (displayln "ETATCH") ; ctrl-d shows as ^D,so now they see ^DETACH in history
-                      (system "tmux detach")]
-                     [else (displayln "")])
-                (loop)))))))
+              
+                (let loop ()
+                  (with-handlers ([exn:break? (λ (e) (shutdown!))])
+                    (read-eval-print-loop) 
+                    ;; runs if EOF breaks out of REPL
+                    (cond[(in-tmux?) 
+                          (displayln "ETATCH") ; ctrl-d shows as ^D,so now they see ^DETACH in history
+                          (system "tmux detach")]
+                         [else (displayln "")])
+                    (loop))))
+            (shutdown!)))))
 
   (capture-signal! 'SIGTERM)
   (with-handlers ([exn:break?
@@ -534,6 +534,7 @@
   (flush-output (current-output-port))
   (flush-output (current-error-port)))
 
-(when pre-readline-input-port
+#|(when pre-readline-input-port
   (close-input-port (current-input-port))
   (current-input-port pre-readline-input-port))
+|#
